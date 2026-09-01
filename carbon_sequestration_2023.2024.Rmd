@@ -1,0 +1,4937 @@
+---
+title: "carbon_sequestration"
+author: "antsypants"
+date: "2025-02-10"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+### run to setup 
+```{r setup, include=FALSE}
+### package loading
+library(here)
+library(car)
+library(lattice)
+library(ggplot2)
+library(dplyr)
+library(lsmeans)
+library(patchwork)
+library(ggpubr)
+library(forcats)
+library(PNWColors)
+library(stargazer)
+library(agricolae)
+library(rstatix)
+library(plotrix)
+library(vegan)
+library(multcompView)
+library(multcomp)
+library(cluster)
+library(ggrepel)
+library(writexl)
+library(anytime)
+
+### data reading
+here::i_am("carbon_sequestration_2023.2024.Rmd")
+combine <- read.csv(here("carboncombined.csv"))
+combine$UNIX <- as.POSIXct(combine$UNIX, origin="1970-01-01")
+
+wunderdata <- read.csv(here("wunderdata.csv"))
+wunderdata$Date <- as.POSIXct(wunderdata$UNIX, origin="1970-01-01")
+
+tidedata <- read.csv(here("tidedata.csv"))
+tidedata$Date <- as.POSIXct(tidedata$UNIX, origin="1970-01-01")
+
+eelgrass_density_raw <- read.csv(here("CS_eelgrassdensity.csv"))
+eelgrass_measures_raw <- read.csv(here("CS_eelgrassmeasures.csv"))
+densitydiff <- read.csv("densitydiff.csv")
+measdiff <- read.csv("measdiff.csv")
+
+### ggplot themes and palettes
+aes <- theme_set(  theme_bw() +
+  theme(legend.position='none',
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)))
+
+aes2 <- theme_set(
+  theme_bw() +
+  theme(legend.position = "none",
+        margin(b = 10),
+        legend.box.background = element_rect(
+          colour = "black", linewidth = 0.8),
+        axis.title.x=element_text(vjust=-1,
+                                  size=14),
+        axis.title.y=element_text(vjust=3,
+                                  size=14),
+        plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm")))
+
+regionpal <- c("North Bay" = "#625a94", 
+               "North Central" = "#f9ad2a",
+               "South Central" = "#f57946", 
+               "South Bay" = "#cc5c76")
+sitepal <- c("NB-1" = "#FF3300", "NB-2" = "#FF6600", "NB-3" = "#660000", "NC-1" = "#99FF66", "NC-2" = "#339900", "NC-3" = "#336600", "SC-1"= "#66CCFF", "SC-2" = "#3399FF", "SC-3" = "#003366", "SB-1" = "#FF33FF", "SB-2" = "#9900CC", "SB-3" = "#330066")
+trtpal <- pnw_palette(
+  name="Bay",n=3,type='discrete')
+monthpal <- pnw_palette("Bay",8,type="continuous")
+
+# scale limits
+lims <- as.POSIXct(strptime(c("2023-11-01 00:00","2024-12-01 00:00"), format = "%Y-%m-%d %H:%M"))
+
+pHlims <- as.POSIXct(strptime(c("2024-07-01 00:00","2024-08-01 00:00"), format = "%Y-%m-%d %H:%M"))
+
+### YSI data wrangling
+dataonly <- combine %>% 
+  filter(Data.Type_depth == "Data" | Data.Type_depth == "Blank") %>% 
+  filter(Data.Type.sal != "Error") %>% 
+  # filter out errors and calibration events
+  mutate(month = case_when(
+    Month.Year == 112023 ~ "Nov '23",
+    Month.Year == 122023 ~ "Dec '23",
+    Month.Year == 12024 ~ "Jan '24",
+    Month.Year == 22024 ~ "Feb '24",
+    Month.Year == 32024 ~ "Mar '24",
+    Month.Year == 42024 ~ "Apr '24",
+    Month.Year == 52024 ~ "May '24",
+    Month.Year == 62024 ~ "Jun '24",
+    Month.Year == 72024 ~ "Jul '24",
+    Month.Year == 82024 ~ "Aug '24",
+    Month.Year == 92024 ~ "Sep '24",
+    Month.Year == 102024 ~ "Oct '24",
+    Month.Year == 112024 ~ "Nov '24",
+    TRUE ~ "other")) %>%
+  # standardize months
+  mutate(Turbidity.errors = ifelse(
+    Turbidity.FNU < 0 | Turbidity.FNU > 25, NA, Turbidity.FNU)) %>%
+  mutate(errordata = case_when(
+    month == "Mar '24" & Site.Name == "Site # 1 South SD Bay" & ODO...sat < 85 ~ "Yes",
+    month == "Mar '24" & Site.Name == "Site # 1 South SD Bay" & ODO.mg.L.adjusted < 6.5 ~ "Yes",
+    month == "Apr '24" & Site.Name == "Site # 1 South SD Bay" & UNIX..unconverted. > 45385.50 & pH.adjusted < 8 ~ "Yes",
+    month == "Apr '24" & Site.Name == "Site # 1 South SD Bay" & UNIX..unconverted. > 45385.50 & ODO...sat < 75 ~ "Yes",
+    month == "Apr '24" & Site.Name == "Site # 1 South SD Bay" & UNIX..unconverted. > 45385.50 & ODO.mg.L.adjusted < 6 ~ "Yes",
+    month == "Apr '24" & Site.Name == "Site # 1 South SD Bay" & UNIX..unconverted. > 45385.50 & Sal.adjusted < 31.7 ~ "Yes",
+    month == "Apr '24" & Site.Name == "Site # 2 South-Central SD Bay" & UNIX..unconverted. > 45385.50 & Turbidity.FNU > 1000 ~ "Yes",
+    month == "Apr '24" & Site.Name == "Site # 2 South-Central SD Bay" & UNIX..unconverted. > 45407.00 & Sal.adjusted < 32.2 ~ "Yes",
+    month == "May '24" & Site.Name == "Site # 1 South SD Bay" & UNIX..unconverted. > 45441.00 & pH.adjusted < 8 ~ "Yes",
+    month == "May '24" & Site.Name == "Site # 1 South SD Bay" & UNIX..unconverted. > 45441.00 & ODO...sat < 65 ~ "Yes",
+    month == "May '24" & Site.Name == "Site # 1 South SD Bay" & UNIX..unconverted. > 45441.00 & ODO.mg.L.adjusted < 5 ~ "Yes",
+    month == "May '24" & Site.Name == "Site # 1 South SD Bay" & UNIX..unconverted. > 45441.00 & Sal.adjusted < 34 ~ "Yes",
+    month == "Jun '24" & Site.Name == "Site # 1 South SD Bay" & Sal.adjusted < 34.24 ~ "Yes",
+    month == "Jun '24" & Site.Name == "Site # 1 South SD Bay" & pH.adjusted < 8 ~ "Yes",
+    month == "Jun '24" & Site.Name == "Site # 1 South SD Bay" & ODO...sat < 75 ~ "Yes",
+    month == "Jun '24" & Site.Name == "Site # 1 South SD Bay" & ODO.mg.L.adjusted < 5 ~ "Yes",
+    month == "Jul '24" & Site.Name == "Site # 2 South-Central SD Bay" & Sal.adjusted < 33.5 ~ "Yes",
+    month == "Jul '24" & Site.Name == "Site # 3 North-Central SD Bay" & Sal.adjusted < 33 ~ "Yes",
+    month == "Jul '24" & Site.Name == "Site # 1 South SD Bay" & pH.adjusted < 8 ~ "Yes",
+    month == "Jul '24" & Site.Name == "Site # 2 South-Central SD Bay" & ODO...sat < 50 ~ "Yes",
+    month == "Aug '24" & Site.Name == "Site # 2 South-Central SD Bay" & Sal.adjusted < 33.5 ~ "Yes",
+    month == "Aug '24" & Site.Name == "Site # 2 South-Central SD Bay" & pH.adjusted < 8.1 ~ "Yes",
+    month == "Aug '24" & Site.Name == "Site # 1 South SD Bay" & UNIX..unconverted. > 45534.00 & pH.adjusted < 8.15 ~ "Yes",
+    month == "Aug '24" & Site.Name == "Site # 2 South-Central SD Bay" & ODO...sat < 75 ~ "Yes",
+    month == "Aug '24" & Site.Name == "Site # 2 South-Central SD Bay" & ODO.mg.L.adjusted < 5 ~ "Yes",
+    month == "Sep '24" & Site.Name == "Site # 1 South SD Bay" & Sal.adjusted < 34.75 ~ "Yes",
+    month == "Sep '24" & Site.Name == "Site # 2 South-Central SD Bay" & Sal.adjusted < 33.7 ~ "Yes",
+    month == "Sep '24" & Site.Name == "Site # 3 North-Central SD Bay" & Sal.adjusted < 33.2 ~ "Yes",
+    month == "Sep '24" & pH.adjusted < 8.11 ~ "Yes",
+    month == "Sep '24" & UNIX..unconverted. > 45550.05 & pH.adjusted < 8.16 ~ "Yes",
+    month == "Sep '24" & ODO...sat < 70 ~ "Yes",
+    month == "Oct '24" & Site.Name == "Site # 1 South SD Bay" & Sal.adjusted < 34.7 ~ "Yes",
+    month == "Oct '24" & Site.Name == "Site # 2 South-Central SD Bay" & Sal.adjusted < 33.5 ~ "Yes",
+    month == "Oct '24" & Site.Name == "Site # 1 South SD Bay" & pH.adjusted < 8.15 ~ "Yes",
+    month == "Oct '24" & Site.Name == "Site # 1 South SD Bay" & ODO...sat < 75 ~ "Yes",
+    month == "Oct '24" & Site.Name == "Site # 2 South-Central SD Bay" & ODO...sat < 75 ~ "Yes",
+    month == "Oct '24" & Site.Name == "Site # 2 South-Central SD Bay" & Sal.adjusted < 34.5 ~ "Yes",
+    month == "Nov '24" & Site.Name == "Site # 1 South SD Bay" & Sal.adjusted < 34.5 ~ "Yes",
+    month == "Nov '24" & Site.Name == "Site # 4 North SD Bay" & Sal.adjusted < 32.3 ~ "Yes",
+    month == "Nov '24" & pH.adjusted < 8.17 ~ "Yes",
+    month == "Nov '24" & ODO...sat < 60 ~ "Yes",
+    month == "Nov '24" & ODO.mg.L.adjusted < 2.75 ~ "Yes",
+    TRUE ~ "No")) %>%
+  # filter out spikes
+  mutate(site = case_when(
+    Site.Name == "Site # 1 South SD Bay"~ "South Bay",
+    Site.Name == "Site # 2 South-Central SD Bay"~ "South Central",
+    Site.Name == "Site # 3 North-Central SD Bay"~ "North Central",
+    Site.Name == "Site # 4 North SD Bay"~ "North Bay",
+    TRUE ~ ".")) %>% 
+  filter(errordata == "No") 
+
+dataonly$site <- factor(dataonly$site, levels = c("North Bay", "North Central", "South Central", "South Bay"))
+
+dailymeans <- dataonly %>% 
+  mutate(POSIXdate = as.POSIXct(Date..MM.DD.YYYY.,
+                                     format = "%m/%d/%Y")) %>% 
+  group_by(POSIXdate, site) %>% 
+  summarise(meanTemp = mean(Temp..C),
+            meanSal = mean(Sal.adjusted),
+            meanpH = mean(pH.adjusted),
+            meanDO = mean(ODO...sat),
+            meanDOconc = mean(ODO.mg.L.adjusted),
+            meanDepth = mean(Depth.adjusted),
+            meanTurb = mean(Turbidity.errors))
+
+# eelgrass density wrangling
+eelgrass_density <- eelgrass_density_raw %>%
+  na.omit() %>%
+  mutate(scaledDensity = Density*16) %>% 
+    group_by(Year, Month, Ecoregion, Treatment, Replicate) %>% 
+  summarise(meanDensity = mean(scaledDensity)) %>% 
+  mutate(sqrtDensity = sqrt(meanDensity)) %>% 
+  ungroup() %>% 
+  mutate(time = case_when(Month == "Mar" ~ "0",
+                          Month == "Apr" ~ "31",
+                          Month == "Jun" ~ "92",
+                          Month == "Jul" ~ "122",
+                          Month == "Aug" ~ "153",
+                          Month == "Oct" ~ "214",
+                          Month == "Nov" ~ "245",
+                          TRUE ~ "other")) %>% 
+  mutate(RegionTrt = case_when(
+    Ecoregion == "North Bay" & Treatment == "Full" ~ "NB-Full",
+    Ecoregion == "North Bay" & Treatment == "Half" ~ "NB-Half",
+    Ecoregion == "North Bay" & Treatment == "Reference" ~ "NB-Ref",
+    Ecoregion == "North Central" & Treatment == "Full" ~ "NC-Full",
+    Ecoregion == "North Central" & Treatment == "Half" ~ "NC-Half",
+    Ecoregion == "North Central" & Treatment == "Reference" ~ "NC-Ref",
+    Ecoregion == "South Central" & Treatment == "Full" ~ "SC-Full",
+    Ecoregion == "South Central" & Treatment == "Half" ~ "SC-Half",
+    Ecoregion == "South Central" & Treatment == "Reference" ~ "SC-Ref",
+    Ecoregion == "South Bay" & Treatment == "Full" ~ "SB-Full",
+    Ecoregion == "South Bay" & Treatment == "Half" ~ "SB-Half",
+    Ecoregion == "South Bay" & Treatment == "Reference" ~ "SB-Ref",
+    TRUE ~ "other")) %>% 
+  mutate(RegionLetter = case_when(
+    Ecoregion == "North Bay" ~ "A",
+    Ecoregion == "North Central" ~ "B",
+    Ecoregion == "South Central" ~ "B",
+    Ecoregion == "South Bay" ~ "C",
+    TRUE ~ "other"
+  )) %>% 
+  mutate(TreatmentLetter = case_when(
+    Treatment == "Reference" ~ "A",
+    Treatment == "Half" ~ "A",
+    Treatment == "Full" ~ "A",
+    TRUE ~ "other"
+  )) %>% 
+  mutate(RegTrtLetter = case_when(
+    Ecoregion == "North Bay" & Treatment == "Reference" ~ "ABC",
+    Ecoregion == "North Bay" & Treatment == "Half" ~ "AB",
+    Ecoregion == "North Bay" & Treatment == "Full" ~ "AB",
+    Ecoregion == "North Central" & Treatment == "Reference" ~ "D",
+    Ecoregion == "North Central" & Treatment == "Half" ~ "CD",
+    Ecoregion == "North Central" & Treatment == "Full" ~ "CD",
+    Ecoregion == "South Central" & Treatment == "Reference" ~ "BCD",
+    Ecoregion == "South Central" & Treatment == "Half" ~ "CD",
+    Ecoregion == "South Central" & Treatment == "Full" ~ "CD",
+    Ecoregion == "South Bay" & Treatment == "Reference" ~ "A",
+    Ecoregion == "South Bay" & Treatment == "Half" ~ "A",
+    Ecoregion == "South Bay" & Treatment == "Full" ~ "A",
+    TRUE ~ "other"))
+
+# density facet ordering
+eelgrass_density$Ecoregion <- factor(
+  eelgrass_density$Ecoregion, levels = c(
+    'North Bay', 'North Central', 'South Central', 'South Bay'))
+eelgrass_density$Treatment <- factor(
+  eelgrass_density$Treatment, levels = c(
+    'Full', 'Half', 'Reference'))
+# setting time as a factor
+eelgrass_density$time <- as.numeric(as.character(eelgrass_density$time))
+
+# eelgrass measures wrangling
+eelgrass_measures <- eelgrass_measures_raw %>% 
+  mutate(across(c(
+        Leaf.Length..cm., Leaf.Width..cm., Leaf.Width..mm., Leaf.Area..cm2.),
+        ~na_if(.,0))) %>% 
+  na.omit() %>% 
+  group_by(Year, Month, Ecoregion, Treatment, Replicate) %>% 
+  summarise(meanLeafArea = mean(Leaf.Area..cm2.)) %>% 
+  mutate(sqrtLeafArea = sqrt(meanLeafArea)) %>% 
+  ungroup() %>% 
+  mutate(time = case_when(Month == "Mar" ~ "0",
+                          Month == "Apr" ~ "31",
+                          Month == "Jun" ~ "92",
+                          Month == "Jul" ~ "122",
+                          Month == "Aug" ~ "153",
+                          Month == "Oct" ~ "214",
+                          Month == "Nov" ~ "245",
+                          TRUE ~ "other")) %>% 
+  mutate(RegionLetter = case_when(
+    Ecoregion == "North Bay" ~ "A",
+    Ecoregion == "North Central" ~ "B",
+    Ecoregion == "South Central" ~ "C",
+    Ecoregion == "South Bay" ~ "BC",
+    TRUE ~ "other"
+  )) %>% 
+  mutate(TreatmentLetter = case_when(
+    Treatment == "Reference" ~ "B",
+    Treatment == "Half" ~ "A",
+    Treatment == "Full" ~ "A",
+    TRUE ~ "other"
+  )) %>% 
+  mutate(RegTrtLetter = case_when(
+    Ecoregion == "North Bay" & Treatment == "Reference" ~ "AF",
+    Ecoregion == "North Bay" & Treatment == "Half" ~ "A",
+    Ecoregion == "North Bay" & Treatment == "Full" ~ "A",
+    Ecoregion == "North Central" & Treatment == "Reference" ~ "E",
+    Ecoregion == "North Central" & Treatment == "Half" ~ "CDE",
+    Ecoregion == "North Central" & Treatment == "Full" ~ "BCDE",
+    Ecoregion == "South Central" & Treatment == "Reference" ~ "BCDE",
+    Ecoregion == "South Central" & Treatment == "Half" ~ "ABCF",
+    Ecoregion == "South Central" & Treatment == "Full" ~ "ABF",
+    Ecoregion == "South Bay" & Treatment == "Reference" ~ "DE",
+    Ecoregion == "South Bay" & Treatment == "Half" ~ "BCDE",
+    Ecoregion == "South Bay" & Treatment == "Full" ~ "BCDF",
+    TRUE ~ "other"
+  ))
+# measures facet ordering
+eelgrass_measures$Ecoregion <- factor(
+  eelgrass_measures$Ecoregion, levels = c(
+    'North Bay', 'North Central', 'South Central', 'South Bay'))
+eelgrass_measures$Treatment <- factor(
+  eelgrass_measures$Treatment, levels = c(
+    'Full', 'Half', 'Reference'))
+
+# setting time as a factor
+eelgrass_measures$time <- as.numeric(as.character(eelgrass_measures$time))
+
+# eelgrass density change over time
+density_monthly_diff <- densitydiff %>% 
+  filter(Season != "Test") %>% 
+  group_by(Month, Treatment) %>% #Ecoregion
+  summarise(meanDensityDiff = mean(DensityDiff),
+            sdDensityDiff = sd(DensityDiff))
+density_monthly_diff$Month <- factor(
+  density_monthly_diff$Month, levels = c(
+    'Mar-Apr', 'Apr-Jun', 'Jun-Jul', 'Jul-Aug', 'Aug-Oct', 'Oct-Nov'))
+density_monthly_diff$Treatment <- factor(
+  density_monthly_diff$Treatment, levels = c(
+    'Reference', 'Half', 'Full'))
+
+# eelgrass leaf area change over time
+measdiff$Month <- factor(
+  measdiff$Month, levels = c(
+    'Mar-Apr', 'Apr-Jun', 'Jun-Jul', 'Jul-Aug',
+    'Aug-Oct', 'Oct-Nov'))
+measdiff$Season <- factor(
+  measdiff$Season, levels = c(
+    'Early Summer', 'Late Summer', 'Fall'))
+
+measdiff_summary <- measdiff %>% 
+  group_by(Month, Treatment) %>% 
+  summarise(meanLADiff = mean(LeafAreaDiff),
+            sdLADiff = sd(LeafAreaDiff))
+```
+
+### water quality data summary
+```{r}
+wq_summary <- dataonly %>% 
+  dplyr::select(Temp..C, 
+                pH.adjusted, 
+                Sal.adjusted, 
+                ODO...sat, 
+                ODO.mg.L.adjusted,
+                Turbidity.errors,
+                Depth.adjusted,
+                month,
+                site) %>%
+  na.omit(T) %>% 
+  group_by(month,
+           site) %>% 
+  summarise_all(list(mean = mean,
+                     median = median,
+                     sd = sd,
+                     max = max,
+                     min = min))
+
+# factor releveling
+wq_summary$site <- factor(
+  wq_summary$site, 
+  levels = c("North Bay", "North Central", "South Central", "South Bay"))
+wq_summary$month <- factor(
+  wq_summary$month, 
+  levels = c(
+    "Nov '23", "Dec '23", "Jan '24", "Feb '24", "Mar '24", "Apr '24", "May '24", "Jun '24", "Jul '24", "Aug '24", "Sep '24", "Oct '24", "Nov '24"))
+```
+
+### wunder and tide data
+```{r}
+### precipitation 
+precipitation <- ggplot(data=wunderdata, aes(x=Date, y=Precipitation)) +
+  geom_line() +
+  xlab("Date") +
+  ylab("Precipitation (total in.)") +
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y",
+                   limits = lims) +
+  theme_bw()
+
+precipitation
+
+### windspeed
+windspeed <- ggplot(data=wunderdata, aes(x=Date, y=Wind.Speed.mph.Avg)) +
+  geom_line() +
+  xlab("Date") +
+  ylab("Avg Wind Speed (mph)") +
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y",
+                   limits = lims) +
+  theme_bw()
+
+windspeed2 <- windspeed +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position=c(.87,.23),
+        legend.title=element_blank())
+
+### tides
+tinovhart <- ggplot(data=tidedata, aes(x=Date, y=Tide.Height.ft.)) +
+  geom_line() +
+  xlab("Date") +
+  ylab("Tide Height (ft)") +
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y",
+                   limits = lims) +
+  theme_bw()
+
+tinovhart
+```
+
+### [water quality graphs]
+```{r}
+# salinity
+# plot for salinity at every timestamp
+salinity <- ggplot(data=dataonly, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Sal. (PSU)") +
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y",
+                   limits = lims) +
+  # facet_wrap(~site, ncol = 2) + 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+salinity
+
+# plot of daily mean salinity
+salmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanSal, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab ("Sal. (PSU)") +
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) +
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+salmean
+
+# temperature
+# plot of temperature at every time point
+temperature <- ggplot(
+  data=dataonly, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab(expression("Temp. " (degree*C))) + 
+  scale_x_datetime(name = "Date", date_breaks = "1 month",
+                   date_labels = "%b %y", 
+                   guide = guide_axis(angle = 0)) +
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3))) 
+  #+ facet_wrap(~site, ncol=2)
+  
+# temperature
+# plot of daily mean temperature
+tempmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanTemp, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab(expression("Temp. " (degree*C))) + 
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) +
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+tempmean
+
+# DO % & DO concentration
+# DO percentage
+DOcombined <- ggplot(data=dataonly, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO (%)") +
+  scale_x_datetime(name = "Date", date_breaks = "1 month",
+                   date_labels = "%b %y", 
+                   guide = guide_axis(angle = 0)) +
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  # + facet_wrap(~site, ncol = 2)
+  
+DOcombined 
+
+# DO concentration
+DOconc_combined <- ggplot(
+  data=dataonly, 
+  aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO (mg/L)") +
+  scale_x_datetime(name = "Date", date_breaks = "1 month",
+                   date_labels = "%b %y", 
+                   guide = guide_axis(angle = 0)) +
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  # + facet_wrap(~site, ncol = 2)
+  
+DOconc_combined
+
+DOmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanDO, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab("DO %") + 
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+DOmean
+
+DOconcmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanDOconc, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab("DO (mg/L)") + 
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+DOconcmean
+
+# pH
+# plot of pH at every time stamp.
+pH <- ggplot(data=dataonly, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(name = "Date", date_breaks = "1 month",
+                   date_labels = "%b %y", 
+                   guide = guide_axis(angle = 0)) +
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+# + facet_wrap(~site, ncol = 2)
+
+pH
+
+# daily mean pH
+pHmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanpH, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab("pH") + 
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+pHmean
+
+# depth
+# correct outliers to site 3
+depthcombined <- ggplot(data=dataonly, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Depth (m)") +
+  scale_x_datetime(name = "Date", date_breaks = "1 month",
+                   date_labels = "%b %y", 
+                   guide = guide_axis(angle = 0)) +
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3))) 
+#+ facet_wrap(~site, ncol=2) # if you want separated by Ecoregion
+
+depthcombined
+
+depthseparate <- ggplot(data=depthdata, aes(x=UNIX, y=Depth.adjusted, col=Site.Name)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 month", guide = guide_axis(angle = 45)) +
+  facet_wrap(~Site.Name) +
+  theme_bw() +
+  theme(legend.position = "none")
+  
+depthseparate
+
+depthmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanDepth, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab("Depth (m)") + 
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+depthmean
+
+# turbidity
+turbcombined <- ggplot(data=dataonly, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity") +
+  scale_x_datetime(name = "Date", date_breaks = "1 month",
+                   date_labels = "%b %y", 
+                   guide = guide_axis(angle = 0)) +
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+turbcombined
+
+turbseparate <- ggplot(data=dataonly, aes(x=UNIX, y=Turbidity.FNU, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity") +
+  scale_x_datetime(date_breaks = "1 month", guide = guide_axis(angle = 45)) +
+  facet_wrap(~Site.Name) +
+  theme_bw() +
+  ylim(0,100) +
+  theme(legend.position = "none")
+  
+turbseparate
+
+turbmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanTurb, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab("Turb. (FNU)") + 
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+turbmean
+```
+
+# aggregating water quality plots
+```{r}
+turbmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanTurb, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab("Turb. (FNU)") + 
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+turbmean
+
+salmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanSal, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab ("Sal. (PSU)") +
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+salmean
+
+pHmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanpH, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab("pH") + 
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+pHmean
+
+DOmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanDO, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab("DO %") + 
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+DOmean
+
+DOconcmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanDOconc, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab("DO (mg/L)") + 
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+DOconcmean
+
+tempmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanTemp, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab(expression("Temp. " (degree*C))) + 
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+tempmean
+
+depthmean <- ggplot(data=dailymeans, aes(x=POSIXdate, y=meanDepth, group=site, col=site)) +
+  geom_line(linewidth=1) +
+  xlab("Date") +
+  ylab("Depth (m)") + 
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y") +
+  # facet_wrap(~site, ncol = 2) 
+  labs(fill="Ecoregion") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal) +
+  scale_fill_manual(values=regionpal) +
+  aes2 +
+  theme(legend.position = "right",
+        axis.title.x=element_text(vjust=-1,
+                                  size=12),
+        axis.title.y=element_text(vjust=3,
+                                  size=12)) +
+  guides(colour = guide_legend(override.aes =
+                               list(linewidth=3)))
+  
+depthmean
+
+
+tempagg <- temperature +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8))
+
+pHagg <- pH +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8))
+
+salagg <- salinity +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8))
+
+DOagg <- DOcombined +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8))
+
+DOconcagg <- DOconc_combined +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8))
+
+depthagg <- depthcombined +
+  theme(
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8))
+
+turbagg <- turbcombined +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8))
+
+ggarrange(tempagg, pHagg, salagg, DOagg, DOconcagg, turbagg, depthagg, ncol = 1, nrow = 7, common.legend=T, legend="top")
+
+tempmean_agg <- tempmean +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="top",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8)) +
+  annotate("text", 
+           x = as.POSIXct(-Inf, origin = '1970-01-01'), 
+           y = Inf,
+           hjust = -0.5, 
+           vjust = 1.3, 
+           label = "A")
+
+pHmean_agg <- pHmean +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8)) +
+  annotate("text", 
+           x = as.POSIXct(-Inf, origin = '1970-01-01'), 
+           y = Inf,
+           hjust = -0.5, 
+           vjust = 1.3, 
+           label = "B")
+
+salmean_agg <- salmean +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8)) +
+  annotate("text", 
+           x = as.POSIXct(-Inf, origin = '1970-01-01'), 
+           y = Inf,
+           hjust = -0.5, 
+           vjust = 1.3, 
+           label = "C")
+
+DOmean_agg <- DOmean +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8)) +
+  annotate("text", 
+           x = as.POSIXct(-Inf, origin = '1970-01-01'), 
+           y = Inf,
+           hjust = -0.5, 
+           vjust = 1.3, 
+           label = "D")
+
+DOconcmean_agg <- DOconcmean +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8)) +
+  annotate("text", 
+           x = as.POSIXct(-Inf, origin = '1970-01-01'), 
+           y = Inf,
+           hjust = -0.5, 
+           vjust = 1.3, 
+           label = "E")
+
+depthmean_agg <- depthmean +
+  theme(legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8)) +
+  annotate("text", 
+           x = as.POSIXct(-Inf, origin = '1970-01-01'), 
+           y = Inf,
+           hjust = -0.5, 
+           vjust = 1.3, 
+           label = "G")
+
+turbmean_agg <- turbmean +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8)) +
+  annotate("text", 
+           x = as.POSIXct(-Inf, origin = '1970-01-01'), 
+           y = Inf,
+           hjust = -0.5, 
+           vjust = 1.3, 
+           label = "F")
+
+waterquality <- free(tempmean_agg, type = c("label")) + free(pHmean_agg, type = c("label")) + free(salmean_agg, type = c("label")) + free(DOmean_agg, type = c("label")) + free(DOconcmean_agg, type = c("label")) + free(turbmean_agg, type = c("label")) + free(depthmean_agg, type = c("label")) + plot_layout(ncol=1, nrow=7)
+
+waterquality # figure 1 (water quality summary)
+```
+
+
+### [biotic data, eelgrass comparisons]
+# means and SE
+```{r}
+# means and SE for density
+densitysum_region <- eelgrass_density %>% # by ecoregion
+  dplyr::select(Ecoregion, meanDensity) %>% 
+  group_by(Ecoregion) %>% 
+  na.omit() %>% 
+  summarise_all(list(mean = ~mean(.), sd = ~sd(.), se = ~std.error(.)))
+
+densitysum_treatment <- eelgrass_density %>% # by treatment
+  dplyr::select(Treatment, meanDensity) %>% 
+  group_by(Treatment) %>% 
+  na.omit() %>% 
+  summarise_all(list(mean = ~mean(.), sd = ~sd(.), se = ~std.error(.)))
+
+densitysum_regiontreatment <- eelgrass_density %>% # by ecoregion + treatment
+  dplyr::select(Ecoregion, Treatment, meanDensity) %>% 
+  group_by(Treatment, Ecoregion) %>% 
+  na.omit() %>% 
+  summarise_all(list(mean = ~mean(.), sd = ~sd(.), se = ~std.error(.)))
+
+# means and SE for Leaf Area
+areasum_region <- eelgrass_measures %>% # by ecoregion
+  dplyr::select(Ecoregion, meanLeafArea) %>% 
+  group_by(Ecoregion) %>% 
+  na.omit() %>% 
+  summarise_all(list(mean = ~mean(.), sd = ~sd(.), se = ~std.error(.)))
+
+areasum_treatment <- eelgrass_measures %>% # by treatment
+  dplyr::select(Treatment, meanLeafArea) %>% 
+  group_by(Treatment) %>% 
+  na.omit() %>% 
+  summarise_all(list(mean = ~mean(.), sd = ~sd(.), se = ~std.error(.)))
+
+areasum_regiontreatment <- eelgrass_measures %>% # by ecoregion + treatment
+  dplyr::select(Ecoregion, Treatment, meanLeafArea) %>% 
+  group_by(Ecoregion, Treatment) %>% 
+  na.omit() %>% 
+  summarise_all(list(mean = ~mean(.), sd = ~sd(.), se = ~sd(./sqrt(.))))
+```
+
+# cluster analysis
+```{r}
+# determine whether sites within each ecoregion cluster together
+cluster_density <- eelgrass_density_raw %>% 
+  na.omit %>% 
+  group_by(Month, Site, Ecoregion) %>% 
+  summarise(meanDensity = mean(Density)) %>%
+  ungroup() 
+
+cluster_leafarea <- eelgrass_measures_raw %>% 
+  na.omit %>% 
+  group_by(Month, Site, Ecoregion) %>% 
+  summarise(meanLeafArea = mean(Leaf.Area..cm2.)) %>%
+  ungroup() 
+
+cluster_metrics <- cluster_density %>% 
+  left_join(cluster_leafarea) %>% 
+  dplyr::select(2:5)
+
+# includes both variables
+mds_site <- cmdscale(dist(cluster_metrics[, 1:4]))
+kmeans_clusters <- kmeans(mds_site, centers = 4)$cluster
+
+# density
+mds_site_density <- cmdscale(dist(cluster_density[, 2:4]))
+kmeans_clusters_density <- kmeans(mds_site_density, centers = 4)$cluster
+
+# leaf area
+mds_site_leafarea <- cmdscale(dist(cluster_leafarea[, 2:4]))
+kmeans_clusters_leafarea <- kmeans(mds_site_leafarea, centers = 12)$cluster
+
+# Add cluster information to the MDS results
+mds_df_density <- as.data.frame(mds_site_density)
+mds_df_density$groups <- as.factor(kmeans_clusters_density)
+mds_df_density$Site <- cluster_density$Site
+mds_df_density$Ecoregion <- cluster_density$Ecoregion
+
+mds_df_leafarea <- as.data.frame(mds_site_leafarea)
+mds_df_leafarea$groups <- as.factor(kmeans_clusters_leafarea)
+mds_df_leafarea$Site <- cluster_leafarea$Site
+mds_df_leafarea$Ecoregion <- cluster_leafarea$Ecoregion
+
+mds_df <- as.data.frame(mds_site)
+mds_df$groups <- as.factor(kmeans_clusters)
+mds_df$Site <- cluster_metrics$Site
+mds_df$Ecoregion <- cluster_metrics$Ecoregion
+mds_df$Site <- cluster_metrics$Site
+
+# cluster plot for sites including both density and leaf area
+density_mds <- ggscatter(mds_df_density, x = "V1", y = "V2",
+          color = "Site",
+          size = 3,
+          ellipse = TRUE,
+          ellipse.type = "convex",
+          title = "K-means Clustering of Sites by Density",
+          xlab = "MDS Dimension 1",
+          ylab = "MDS Dimension 2") +
+  geom_text_repel(aes(label = Site), box.padding = 0.5,
+                  max.overlaps = 10) 
+
+density_mds
+
+leafarea_mds <- ggscatter(mds_df_leafarea, x = "V1", y = "V2",
+          color = "Site",
+          size = 3,
+          ellipse = TRUE,
+          ellipse.type = "convex",
+          title = "K-means Clustering of Sites by Leaf Area",
+          xlab = "MDS Dimension 1",
+          ylab = "MDS Dimension 2") +
+  geom_text_repel(aes(label = Site), box.padding = 0.5,
+                  max.overlaps = 10) 
+
+leafarea_mds
+
+metrics_mds <- ggscatter(mds_df, x = "V1", y = "V2",
+          color = "Site",
+          size = 3,
+          ellipse = TRUE,
+          ellipse.type = "convex",
+          title = "K-means Clustering of Sites by Eelgrass Metrics",
+          xlab = "MDS Dimension 1",
+          ylab = "MDS Dimension 2") +
+  geom_text_repel(aes(label = Site), box.padding = 0.5,
+                  max.overlaps = 10) 
+
+metrics_mds
+
+# determine whether treatments within ecoregions cluster together
+cluster_density_trt <- eelgrass_density_raw %>% 
+  na.omit %>%
+  mutate(RegionTrt = case_when(
+    Ecoregion == "North Bay" & Treatment == "Full" ~ "NB-Full",
+    Ecoregion == "North Bay" & Treatment == "Half" ~ "NB-Half",
+    Ecoregion == "North Bay" & Treatment == "Reference" ~ "NB-Ref",
+    Ecoregion == "North Central" & Treatment == "Full" ~ "NC-Full",
+    Ecoregion == "North Central" & Treatment == "Half" ~ "NC-Half",
+    Ecoregion == "North Central" & Treatment == "Reference" ~ "NC-Ref",
+    Ecoregion == "South Central" & Treatment == "Full" ~ "SC-Full",
+    Ecoregion == "South Central" & Treatment == "Half" ~ "SC-Half",
+    Ecoregion == "South Central" & Treatment == "Reference" ~ "SC-Ref",
+    Ecoregion == "South Bay" & Treatment == "Full" ~ "SB-Full",
+    Ecoregion == "South Bay" & Treatment == "Half" ~ "SB-Half",
+    Ecoregion == "South Bay" & Treatment == "Reference" ~ "SB-Ref",
+    TRUE ~ "other")) %>% 
+  group_by(Month, Ecoregion, Treatment, RegionTrt) %>% 
+  summarise(meanDensity = mean(Density)) %>%
+  ungroup() 
+
+cluster_leafarea_trt <- eelgrass_measures_raw %>% 
+  na.omit %>% 
+  mutate(RegionTrt = case_when(
+    Ecoregion == "North Bay" & Treatment == "Full" ~ "NB-Full",
+    Ecoregion == "North Bay" & Treatment == "Half" ~ "NB-Half",
+    Ecoregion == "North Bay" & Treatment == "Reference" ~ "NB-Ref",
+    Ecoregion == "North Central" & Treatment == "Full" ~ "NC-Full",
+    Ecoregion == "North Central" & Treatment == "Half" ~ "NC-Half",
+    Ecoregion == "North Central" & Treatment == "Reference" ~ "NC-Ref",
+    Ecoregion == "South Central" & Treatment == "Full" ~ "SC-Full",
+    Ecoregion == "South Central" & Treatment == "Half" ~ "SC-Half",
+    Ecoregion == "South Central" & Treatment == "Reference" ~ "SC-Ref",
+    Ecoregion == "South Bay" & Treatment == "Full" ~ "SB-Full",
+    Ecoregion == "South Bay" & Treatment == "Half" ~ "SB-Half",
+    Ecoregion == "South Bay" & Treatment == "Reference" ~ "SB-Ref",
+    TRUE ~ "other")) %>% 
+  group_by(Month, Ecoregion, Treatment, RegionTrt) %>% 
+  summarise(meanLeafArea = mean(Leaf.Area..cm2.)) %>%
+  ungroup() 
+
+cluster_metrics_trt <- cluster_density_trt %>% 
+  left_join(cluster_leafarea_trt) %>% 
+  dplyr::select(2:6)
+
+# includes both variables
+mds_treatment <- cmdscale(dist(cluster_metrics_trt[, 1:5]))
+kmeans_clusters_trt <- kmeans(mds_treatment, centers = 4)$cluster
+
+# density
+mds_trt_density <- cmdscale(dist(cluster_density_trt[, 2:5]))
+kmeans_clusters_density_trt <- kmeans(mds_trt_density, centers = 4)$cluster
+
+# leaf area
+mds_trt_leafarea <- cmdscale(dist(cluster_leafarea_trt[, 2:5]))
+kmeans_clusters_leafarea_trt <- kmeans(mds_trt_leafarea, centers = 4)$cluster
+
+# Add cluster information to the MDS results
+mds_df_density_trt <- as.data.frame(mds_trt_density)
+mds_df_density_trt$groups <- as.factor(kmeans_clusters_density_trt)
+mds_df_density_trt$RegionTrt <- cluster_density_trt$RegionTrt
+mds_df_density_trt$Ecoregion <- cluster_density_trt$Ecoregion
+mds_df_density_trt$Treatment <- cluster_density_trt$Treatment
+
+mds_df_leafarea_trt <- as.data.frame(mds_trt_leafarea)
+mds_df_leafarea_trt$groups <- as.factor(kmeans_clusters_leafarea_trt)
+mds_df_leafarea_trt$RegionTrt <- cluster_leafarea_trt$RegionTrt
+mds_df_leafarea_trt$Ecoregion <- cluster_leafarea_trt$Ecoregion
+mds_df_leafarea_trt$Treatment <- cluster_leafarea_trt$Treatment
+
+mds_df_trt <- as.data.frame(mds_treatment)
+mds_df_trt$groups <- as.factor(kmeans_clusters_trt)
+mds_df_trt$RegionTrt <- cluster_metrics_trt$RegionTrt
+mds_df_trt$Ecoregion <- cluster_metrics_trt$Ecoregion
+mds_df_trt$Treatment <- cluster_metrics_trt$Treatment
+
+# cluster plots
+density_trt_mds <- ggscatter(mds_df_density_trt, x = "V1", y = "V2",
+          color = "Treatment",
+          size = 3,
+          ellipse = TRUE,
+          ellipse.type = "convex",
+          title = "K-means Clustering of Treatments by Density",
+          xlab = "MDS Dimension 1",
+          ylab = "MDS Dimension 2") +
+  scale_color_manual(values=c("red", "orange", "green")) +
+  scale_fill_manual(values=c("red", "orange", "green")) +
+  geom_text_repel(aes(label = RegionTrt), box.padding = 0.5,
+                  max.overlaps = 10) 
+
+density_trt_mds
+
+leafarea_trt_mds <- ggscatter(mds_df_leafarea_trt, x = "V1", y = "V2",
+          color = "Treatment",
+          size = 3,
+          ellipse = TRUE,
+          ellipse.type = "convex",
+          title = "K-means Clustering of Treatments by Leaf Area",
+          xlab = "MDS Dimension 1",
+          ylab = "MDS Dimension 2") +
+  scale_color_manual(values=c("red", "orange", "green")) +
+  scale_fill_manual(values=c("red", "orange", "green")) +
+  geom_text_repel(aes(label = RegionTrt), box.padding = 0.5,
+                  max.overlaps = 10) 
+
+leafarea_trt_mds
+
+ggarrange(density_trt_mds + leafarea_trt_mds)
+
+metrics_mds_trt <- ggscatter(mds_df_trt, x = "V1", y = "V2",
+          color = "Ecoregion",
+          size = 3,
+          shape = "Treatment",
+          ellipse = TRUE,
+          ellipse.type = "convex",
+          title = "K-means Clustering of Treatments by Eelgrass Metrics",
+          xlab = "MDS Dimension 1",
+          ylab = "MDS Dimension 2") +
+  scale_color_manual(values=c("red", "orange", "green", "blue")) +
+  scale_fill_manual(values=c("red", "orange", "green", "blue")) +
+  geom_text_repel(aes(label = RegionTrt), box.padding = 0.5,
+                  max.overlaps = 10) 
+
+metrics_mds_trt
+# make one that includes treatment as well, labels are ecoregion, color of points become treatment level
+```
+
+# ANOVA (Density + Leaf Area by Treatment and Ecoregion)
+# density
+```{r}
+# visualization
+# overall densities
+# density between ecoregions
+denregionletters <- group_by(eelgrass_density, Ecoregion, RegionLetter) %>% 
+  summarise(mean=mean(meanDensity), quant=quantile(meanDensity, probs=0.75)) %>% 
+  arrange(desc(mean))
+
+region_den <- ggplot(
+  data=eelgrass_density, aes(
+    x=Ecoregion,
+    y=meanDensity,
+    fill=Ecoregion
+  )) +
+  xlab("Ecoregion") +
+  ylab(expression(paste("Density (# of shoots/m"^"2",")"))) +
+  ylim(0, 750) +
+  geom_boxplot() +
+   scale_fill_manual(
+    values=rev(regionpal)
+  ) +
+  geom_text(data = denregionletters, aes(
+    x = Ecoregion, 
+    y = quant, 
+    label=RegionLetter,
+    vjust = -1,
+    hjust = -1)) +
+  theme_set(aes) +
+  theme(legend.position = "none") + 
+  coord_cartesian(ylim=c(0,750))
+
+region_den
+
+# effects of fertilizer treatments
+# fertilizer treatment effects on overall density
+dentrtletters <- group_by(eelgrass_density, Treatment, TreatmentLetter) %>% 
+  summarise(mean=mean(meanDensity), quant=quantile(meanDensity, probs=0.75)) %>% 
+  arrange(desc(mean))
+
+den_by_trt <- ggplot(
+  data=eelgrass_density, aes(
+    x=Treatment,
+    y=meanDensity,
+    fill=Treatment)) +
+  ylab(expression(paste("Density (# of shoots/m"^"2",")"))) +
+  geom_boxplot() +
+  geom_text(data = dentrtletters, aes(
+    x = Treatment, 
+    y = quant, 
+    label=TreatmentLetter,
+    vjust = -1,
+    hjust = -1)) +
+  scale_fill_manual(
+    values=trtpal) +
+  ylim(0, 750) +
+  theme_set(aes) +
+  theme(legend.position = "none")
+
+den_by_trt
+
+# fertilizer treatment effects on density between ecoregions
+regiondentrtletters <- group_by(eelgrass_density, Ecoregion, Treatment, RegTrtLetter) %>% 
+  summarise(mean=mean(meanDensity), max=max(meanDensity)) %>% 
+  arrange(desc(mean))
+
+region_den_by_trt <- ggplot(
+  data=eelgrass_density, aes(
+    x=Ecoregion,
+    y=meanDensity,
+    fill=Treatment
+  )) +
+  ylab(expression(paste("Density (# of shoots/m"^"2",")"))) +
+  geom_boxplot() +
+  geom_text(data = regiondentrtletters, aes(
+    x = Ecoregion, 
+    y = max, 
+    label=RegTrtLetter,
+    vjust = -1,
+    hjust = 0.5),
+    position = position_dodge(width=0.8)) +
+  xlab("Ecoregion") +
+   scale_fill_manual(
+    values=trtpal
+  ) +
+  ylim(0, 750) +
+  theme_set(aes2) +
+  theme(legend.position = "right",
+    legend.box.background = element_rect(
+      colour = "black", linewidth = 0.5))
+
+region_den_by_trt
+
+# density between ecoregion
+dplyr::count(eelgrass_density, Ecoregion) # equal sample size but not really because averaging was not equal
+hist(eelgrass_density$sqrtDensity)
+leveneTest(sqrtDensity ~ Ecoregion, data = eelgrass_density) # unequal variance, need to use Welch's ANOVA + games-howell post hoc analysis
+
+regaovsum <- as.data.frame(oneway.test(sqrtDensity ~ Ecoregion, data = eelgrass_density, var.equal = FALSE))
+# significant differences detected between ecoregions
+reg_gh <- games_howell_test(eelgrass_density, sqrtDensity~Ecoregion, conf.level = 0.90, detailed = FALSE) # post-hoc for Welch's ANOVA, North Central and South Central not significantly different, everything else is.
+reg_gh
+# densities by treatment
+dplyr::count(eelgrass_density, Treatment)
+leveneTest(sqrtDensity ~ Treatment, data = eelgrass_density) # same with ecoregion
+
+trt_den_aov <- aov(sqrtDensity~Treatment, data = eelgrass_density)
+summary(trt_den_aov)
+trtden_tukey <- TukeyHSD(trt_den_aov)
+
+# two-way ANOVA for ecoregion and treatment on density
+type3 <- list(Ecoregion = contr.sum, Treatment = contr.sum) # setting contrasts
+
+regiontrt_densitymodel <- lm(sqrtDensity ~ Ecoregion*Treatment, data = eelgrass_density, contrasts = type3) # linear model
+regtrtden_aov <- Anova(regiontrt_densitymodel, type=3)
+regtrtden_tukey <- TukeyHSD(aov(regiontrt_densitymodel), conf.level = 0.9, alpha = 0.1)
+regtrt_den_cld <- regiontrt_densitymodel %>%
+  emmeans(~ Ecoregion*Treatment) %>%
+  cld(Letters = letters, adjust = "Tukey", sort = F, alpha = 0.1)
+regtrt_den_cld
+```
+
+# leaf measures
+```{r}
+# visualization
+# overall leaf measures
+# leaf measures between ecoregions
+arearegionletters <- group_by(eelgrass_measures, Ecoregion, RegionLetter) %>% 
+  summarise(mean=mean(meanLeafArea), quant=quantile(meanLeafArea, probs=0.75)) %>% 
+  arrange(desc(mean))
+
+area_by_region <- ggplot(
+  data=eelgrass_measures, aes(
+    x=Ecoregion,
+    y=meanLeafArea,
+    fill=Ecoregion
+  )) +
+  xlab("Ecoregion") +
+  ylab(expression(paste("Leaf Area (cm"^"2",")"))) +
+  ylim(0, 21.5) +
+  geom_boxplot() +
+  scale_fill_manual(
+    values=rev(regionpal)) +
+   geom_text(data = arearegionletters, aes(
+    x = Ecoregion, 
+    y = quant, 
+    label=RegionLetter,
+    vjust = -1,
+    hjust = -0.3),
+    position = position_dodge(width=0.8)) +
+  theme_set(aes) +
+  theme(legend.position = "none")
+
+area_by_region
+
+# leaf measures by treatment
+areatrtletters <- group_by(eelgrass_measures, Treatment, TreatmentLetter) %>% 
+  reframe(mean=mean(meanLeafArea), quant=quantile(meanLeafArea, probs = 0.75)) %>% 
+  arrange(desc(mean))
+
+area_by_trt <- ggplot(
+  data=eelgrass_measures, aes(
+    x=Treatment,
+    y=meanLeafArea,
+    fill=Treatment
+  )) +
+  geom_boxplot() +
+   geom_text(data = areatrtletters, aes(
+    x = Treatment, 
+    y = quant, 
+    label=TreatmentLetter,
+    vjust = -1,
+    hjust = -0.8),
+    position = position_dodge(width=0.8)) +
+ scale_fill_manual(
+    values=trtpal) +
+  ylim(0, 21.5) +
+  ylab(expression(paste("Leaf Area (cm"^"2",")"))) +
+  theme_set(aes) +
+  theme(legend.position = "none")
+
+area_by_trt
+
+# region area by treatment
+regionareatrtletters <- group_by(eelgrass_measures, Ecoregion, Treatment, RegTrtLetter) %>% 
+  summarise(mean=mean(meanLeafArea), max=max(meanLeafArea)) %>% 
+  arrange(desc(mean))
+
+region_area_by_trt <- ggplot(
+  data=eelgrass_measures, aes(
+    x=Ecoregion,
+    y=meanLeafArea,
+    fill=Treatment
+  )) +
+  geom_boxplot() +
+  geom_text(data = regionareatrtletters, aes(
+    x = Ecoregion, 
+    y = max, 
+    label=RegTrtLetter,
+    vjust = -1.5,
+    hjust = 0.5),
+    position = position_dodge(width=0.8)) +
+  xlab("Ecoregion") +
+  ylab(expression(paste("Leaf Area (cm"^"2",")"))) +
+  ylim(0, 21.5) +
+ scale_fill_manual(
+    values=trtpal) +
+  theme_set(aes) +
+  theme(legend.position = "right",
+        legend.box.background = element_rect(
+      colour = "black", linewidth = 0.5))
+  
+region_area_by_trt
+
+# area by ecoregion
+dplyr::count(eelgrass_measures, Ecoregion)
+hist(eelgrass_measures$sqrtLeafArea)
+leveneTest(sqrtLeafArea ~ Ecoregion, data = eelgrass_measures) # unequal sample size and variance
+
+oneway.test(sqrtLeafArea ~ Ecoregion, data = eelgrass_measures, var.equal = FALSE) # significant differences detected between ecoregion
+meas_gh <- games_howell_test(eelgrass_measures, sqrtLeafArea~Ecoregion, conf.level = 0.95, detailed = FALSE)
+
+# area by treatment
+dplyr::count(eelgrass_measures, Treatment)
+leveneTest(sqrtLeafArea ~ Treatment, data = eelgrass_measures) # unequal sample size and variance
+
+trt_area_aov <- aov(sqrtLeafArea~Treatment, data = eelgrass_measures)
+summary(trt_area_aov)
+TukeyHSD(trt_area_aov)
+
+# ecoregion and treatment on leaf area
+type3 <- list(Ecoregion = contr.sum, Treatment = contr.sum) # setting contrasts
+
+regiontrt_areamodel <- lm(sqrtLeafArea ~ Ecoregion*Treatment, data = eelgrass_measures, contrasts = type3) # linear model
+Anova(regiontrt_areamodel, type=3)
+regtrtarea_tukey <- TukeyHSD(aov(regiontrt_areamodel), conf.level = 0.9)
+regtrtarea_tukey
+
+regtrt_area_cld <- regiontrt_areamodel %>%
+  emmeans(~ Ecoregion*Treatment) %>%
+  cld(Letters = letters, adjust = "Tukey", sort = F, alpha = 0.1)
+regtrt_area_cld
+```
+
+# Change over Time
+# density visualization
+```{r}
+eelgrass_density_time <- eelgrass_density %>% 
+  group_by(time, Month, Treatment) %>% #Ecoregion
+  summarise(meannDensity = mean(meanDensity),
+            sdDensity = sd(meanDensity,na.rm=T)) %>% 
+  mutate(Date = case_when(Month == "Mar" ~ "2024-03-11",
+                   Month == "Apr" ~ "2024-04-29",
+                   Month == "Jun" ~ "2024-06-04",
+                   Month == "Jul" ~ "2024-07-11",
+                   Month == "Aug" ~ "2024-08-29",
+                   Month == "Oct" ~ "2024-10-07",
+                   Month == "Nov" ~ "2024-11-04",
+                   TRUE ~ "other")) %>%
+  mutate(POSIXdate = as.Date(Date, format = "%Y-%m-%d"))
+
+eelgrass_density_time$Month <- factor(
+  eelgrass_density_time$Month, levels = c(
+    'Mar', 'Apr', 'Jun', 'Jul', 'Aug', 'Oct', 'Nov'))
+
+month_den_plot <- ggplot(
+  data=eelgrass_density_time, aes(
+    x=POSIXdate,
+    y=meannDensity,
+    group=factor(Treatment),
+    col=Treatment)) +
+  xlab("Days after Fertilization") +
+  ylab(expression(paste("Density (# of shoots/m"^"2",")"))) +
+  ylim(0,800) +
+  geom_point(size=3,
+             position=position_dodge2(10)) +
+  geom_line() +
+  geom_errorbar(aes(ymin=meannDensity-sdDensity,
+                    ymax=meannDensity+sdDensity),
+                width=10,
+                position=position_dodge2(10)) +
+  theme_set(aes2) +
+  theme(legend.position = "right",
+    legend.box.background = element_rect(
+      colour = "black", linewidth = 0.8)) +
+  labs(fill="Treatment") +
+  labs(color="Treatment") +
+  scale_x_date(name = "Month", date_breaks = "1 month",
+                   date_labels = "%b") +
+  scale_color_manual(values=trtpal) +
+  scale_fill_manual(values=trtpal) +
+  #facet_wrap(~Ecoregion, ncol=2) +
+  theme(strip.background =element_rect(fill="grey97")) +
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"))
+  
+month_den_plot
+
+overall_density_time <- eelgrass_density_time %>% 
+  group_by(POSIXdate) %>% 
+  summarise(meannnDensity = mean(meannDensity),
+            sdDensity = sd(meannDensity,na.rm=T))
+
+overall_den_plot <- ggplot(
+  data=overall_density_time, aes(
+    x=POSIXdate,
+    y=meannnDensity)) +
+  xlab("Days after Fertilization") +
+  ylab(expression(paste("Density (# of plants/m"^"2",")"))) +
+  ylim(0,650) +
+  geom_point(size=3) +
+  geom_line() +
+  geom_errorbar(aes(ymin=meannnDensity-sdDensity,
+                    ymax=meannnDensity+sdDensity),
+                width=10) +
+  theme_set(aes2) +
+  scale_x_date(name = "Month", date_breaks = "1 month",
+                   date_labels = "%b")
+  #facet_wrap(~Ecoregion, ncol=2) +
+  #theme(strip.background =element_rect(fill="grey97"))
+  
+overall_den_plot
+```
+# leaf area visualization
+```{r}
+# leaf area by treatment 
+eelgrass_measures_time <- eelgrass_measures %>% 
+  mutate(Month=as.factor(Month)) %>% 
+  mutate(time=as.factor(time)) %>% 
+  group_by(time, Month, Treatment, Ecoregion) %>% 
+  # summarise(n = n()) 12 numbers in each group
+  summarise(meannLeafArea = mean(meanLeafArea),
+            sdLeafArea = sd(meanLeafArea,na.rm=T)) %>% 
+  mutate(Date = case_when(Month == "Mar" ~ "2024-03-11",
+                   Month == "Apr" ~ "2024-04-29",
+                   Month == "Jun" ~ "2024-06-04",
+                   Month == "Jul" ~ "2024-07-11",
+                   Month == "Aug" ~ "2024-08-29",
+                   Month == "Oct" ~ "2024-10-07",
+                   Month == "Nov" ~ "2024-11-04",
+                   TRUE ~ "other")) %>%
+  mutate(POSIXdate = as.Date(Date, format = "%Y-%m-%d"))
+  
+eelgrass_measures_time$Month <- factor(
+  eelgrass_measures_time$Month, levels = c(
+    'Mar', 'Apr', 'Jun', 'Jul', 'Aug', 'Oct', 'Nov'))
+
+month_area_plot <- ggplot(
+  data=eelgrass_measures_time, aes(
+    x=POSIXdate,
+    y=meannLeafArea,
+    group=factor(Treatment),
+    col=Treatment)) +
+  ylab(expression(paste("Leaf Area (cm"^"2",")"))) +
+  geom_point(size=3,
+             position=position_dodge2(10)) +
+  geom_line() +
+  ylim(0, 25) +
+  geom_errorbar(aes(ymin=meannLeafArea-sdLeafArea,
+                    ymax=meannLeafArea+sdLeafArea),
+                width=10,
+                position=position_dodge2(10)) +
+  theme_set(aes2) +
+  theme(legend.position = "right",
+    legend.box.background = element_rect(
+      colour = "black", linewidth = 0.8)) +
+  labs(fill="Treatment") +
+  labs(color="Treatment") +
+  scale_color_manual(values=trtpal) +
+  scale_fill_manual(values=trtpal) +
+  scale_x_date(name = "Month", date_breaks = "1 month",
+                   date_labels = "%b") +
+  facet_wrap(~Ecoregion, ncol=2) +
+  theme(strip.background =element_rect(fill="grey97"))
+  
+month_area_plot
+```
+
+# differences between time steps (density)
+```{r}
+density_monthly_diff_plot <- ggplot(
+  data = density_monthly_diff, aes(
+    y=meanDensityDiff,
+    x=Month,
+    group=fct_relevel(Treatment, 'Full', 'Half', 'Reference'))) +
+  ylab(expression(paste("Change in Density (# of shoots/m"^"2",")"))) +
+  geom_bar(position = 'dodge', stat='identity', 
+           aes(fill = Treatment)) +
+  geom_errorbar(aes(ymin=meanDensityDiff-sdDensityDiff, 
+                    ymax=meanDensityDiff+sdDensityDiff),
+                position = position_dodge(width = 0.9)) +
+  theme(legend.position = "right",
+    legend.box.background = element_rect(
+      colour = "black", linewidth = 0.8)) +
+  scale_fill_manual(values=trtpal) +
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"))
+  #facet_wrap(~Ecoregion, ncol = 2)
+
+density_monthly_diff_plot
+
+# full graph
+# models
+dendiff <- densitydiff %>% 
+  mutate(Treatment = case_when(Treatment == "Full" ~ "Full",
+                   Treatment == "Half" ~ "Half",
+                   Treatment == "Reference" ~ "Ref")) %>% 
+  filter(Season != "Test")
+
+dendiff$Month <- factor(
+  dendiff$Month, levels = c(
+    'Mar-Apr', 'Apr-Jun', 'Jun-Jul', 'Jul-Aug',
+    'Aug-Oct', 'Oct-Nov'))
+
+# Overall
+dendiffaov <- aov(DensityDiff ~ Treatment*Month*Ecoregion, data = dendiff)
+dendiffaov_sum <- summary(dendiffaov)
+dendiffaov_sum
+
+marapr <- dendiff %>% 
+  filter(Month == "Mar-Apr") %>% 
+  na.omit(T)
+marapraov <- aov(DensityDiff ~ Treatment, data = marapr)
+summary(marapraov)
+TukeyHSD(marapraov)
+aprjun <- dendiff %>% 
+  filter(Month == "Apr-Jun") %>% 
+  na.omit(T)
+aprjunaov <- aov(DensityDiff ~ Treatment, data = aprjun)
+summary(aprjunaov)
+TukeyHSD(aprjunaov)
+junjul <- dendiff %>% 
+  filter(Month == "Jun-Jul") %>% 
+  na.omit(T)
+junjulaov <- aov(DensityDiff ~ Treatment, data = junjul)
+summary(junjulaov)
+TukeyHSD(junjulaov)
+julaug <- dendiff %>% 
+  filter(Month == "Jul-Aug") %>% 
+  na.omit(T)
+julaugaov <- aov(DensityDiff ~ Treatment, data = julaug)
+summary(julaugaov)
+TukeyHSD(julaugaov)
+augoct <- dendiff %>% 
+  filter(Month == "Aug-Oct") %>% 
+  na.omit(T)
+augoctaov <- aov(DensityDiff ~ Treatment, data = augoct)
+summary(augoctaov)
+TukeyHSD(augoctaov)
+octnov <- dendiff %>% 
+  filter(Month == "Oct-Nov") %>% 
+  na.omit(T)
+octnovaov <- aov(DensityDiff ~ Treatment, data = octnov)
+summary(octnovaov)
+TukeyHSD(octnovaov)
+
+# check this one
+SBdenJUNJUL <- dendiff %>% 
+  filter(Ecoregion == "South Bay",
+         Month == "Jun-Jul") %>% 
+  na.omit(T)
+SBdenJUNJUL_anova <- aov(DensityDiff~Treatment, data = SBdenJUNJUL)
+TukeyHSD(SBdenJUNJUL_anova)
+
+# North Bay
+NBden <- dendiff %>% 
+  filter(Ecoregion == "North Bay") %>% 
+  na.omit(T)
+
+shapiro.test(NBden$DensityDiff)
+leveneTest(DensityDiff~Treatment*Month, data = NBden)
+
+NBdensity_anova <- aov(DensityDiff~Treatment, data = NBden)
+summary(NBdensity_anova)
+
+options(max.print=2000)
+TukeyHSD(NBdensity_anova)
+
+NBdensity_plot <- ggplot(
+  data=NBden,
+  aes(x=Treatment,
+      y=DensityDiff,
+      group=Treatment)) +
+  ylab(expression(paste("Density (# of shoots/m"^"2"))) +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month, nrow=1) +
+  aes2 +
+  labs(title="North Bay") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank()) +
+  theme(strip.background =element_rect(fill="grey97"))
+
+NBdensity_plot
+
+# North Central
+NCden <- dendiff %>% 
+  filter(Ecoregion == "North Central") %>% 
+  na.omit(T)
+
+hist(NCden$DensityDiff)
+shapiro.test(NCden$DensityDiff)
+leveneTest(DensityDiff~Treatment*Month, data = NCden)
+
+NCdensity_anova <- aov(DensityDiff~Treatment*Month, data = NCden)
+summary(NCdensity_anova)
+options(max.print=2000)
+TukeyHSD(NCdensity_anova)
+
+NCdensity_plot <- ggplot(
+  data=NCden,
+  aes(x=Treatment,
+      y=DensityDiff,
+      group=Treatment)) +
+  ylab(expression(paste("Density (# of shoots/m"^"2"))) +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month, nrow=1) +
+  aes2 +
+  labs(title="North Central") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank()) +
+  theme(strip.background =element_rect(fill="grey97"))
+
+NCdensity_plot
+
+# South Central
+SCden <- dendiff %>% 
+  filter(Ecoregion == "South Central") %>% 
+  na.omit(T)
+
+hist(SCden$DensityDiff)
+shapiro.test(SCden$DensityDiff)
+leveneTest(DensityDiff~Treatment*Month, data = SCden)
+
+SCdensity_anova <- aov(DensityDiff~Treatment*Month, data = SCden)
+summary(SCdensity_anova)
+options(max.print=2000)
+TukeyHSD(SCdensity_anova)
+
+SCdensity_plot <- ggplot(
+  data=SCden,
+  aes(x=Treatment,
+      y=DensityDiff,
+      group=Treatment)) +
+  ylab(expression(paste("Density (# of shoots/m"^"2"))) +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month, nrow=1) +
+  aes2 +
+  labs(title="South Central") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank()) +
+  theme(strip.background =element_rect(fill="grey97"))
+
+SCdensity_plot
+
+# South Bay
+SBden <- dendiff %>% 
+  filter(Ecoregion == "South Bay") %>% 
+  na.omit(T)
+
+hist(SBden$DensityDiff)
+shapiro.test(SBden$DensityDiff)
+leveneTest(DensityDiff~Treatment*Month, data = SBden)
+
+SBdensity_anova <- aov(DensityDiff~Treatment*Month, data = SBden)
+summary(SBdensity_anova)
+options(max.print=2000)
+TukeyHSD(SBdensity_anova)
+
+SBdensity_plot <- ggplot(
+  data=SBden,
+  aes(x=Treatment,
+      y=DensityDiff,
+      group=Treatment)) +
+  ylab(expression(paste("Density (# of shoots/m"^"2"))) +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_grid(~factor(Month, levels=c('Mar-Apr', 'Apr-Jun', 'Jun-Jul', 'Jul-Aug', 'Aug-Oct', 'Oct-Nov'))) +
+  geom_signif(data = data.frame(Month = c("Jun-Jul"), 
+                                Treatment = c("Half", "Ref")), 
+              aes(y_position = 85, xmin = 2, xmax = 3, 
+                  annotations = c("*")), tip_length = 0.01, manual = T) +
+  aes2 +
+  labs(title="South Bay") +
+  theme(axis.title.x=element_blank(),
+        axis.title.y=element_blank()) +
+  theme(strip.background =element_rect(fill="grey97"))
+
+SBdensity_plot
+
+density_combined <- ggarrange(NBdensity_plot, NCdensity_plot, SCdensity_plot, SBdensity_plot, ncol=1, nrow=4, legend = "none")
+density_combined
+annotate_figure(density_combined, 
+         left = text_grob(
+           (expression(paste("Change in Density (# of shoots/m"^"2",")"))),
+           rot = 90,
+           size = 14),
+         bottom = text_grob("Treatment", 
+                            hjust = 0.2,
+                            size = 14))
+```
+
+# differences between time steps (leaf area)
+```{r}
+measure_monthly_diff_plot <- ggplot(
+  data = measdiff_summary, aes(
+    y=meanLADiff,
+    x=Month,
+    group=fct_relevel(Treatment, 'Full', 'Half', 'Reference'))) +
+  ylab(expression(paste("Change in Leaf Area (# of plants/m"^"2",")"))) +
+  geom_bar(position = 'dodge', stat='identity', 
+           aes(fill = Treatment)) +
+  geom_errorbar(aes(ymin=meanLADiff-sdLADiff, 
+                    ymax=meanLADiff+sdLADiff),
+                position = position_dodge(width = 0.9)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"))
+  #facet_wrap(~Ecoregion, ncol = 2)
+
+measure_monthly_diff_plot
+
+### overall 
+meas_diff <- measdiff %>% 
+  mutate(Treatment = case_when(Treatment == "Full" ~ "Full",
+                   Treatment == "Half" ~ "Half",
+                   Treatment == "Reference" ~ "Ref")) %>% 
+  filter(Season != "Test")
+
+measdiffaov <- aov(LeafAreaDiff ~ Treatment*Month*Ecoregion, data = meas_diff)
+measdiffaov_sum <- summary(measdiffaov)
+measdiffaov_sum
+
+marapr <- measdiff %>% 
+  filter(Month == "Mar-Apr") %>% 
+  na.omit(T)
+marapraov <- aov(LeafAreaDiff ~ Treatment, data = marapr)
+summary(marapraov)
+TukeyHSD(marapraov)
+aprjun <- measdiff %>% 
+  filter(Month == "Apr-Jun") %>% 
+  na.omit(T)
+aprjunaov <- aov(LeafAreaDiff ~ Treatment, data = aprjun)
+summary(aprjunaov)
+TukeyHSD(aprjunaov)
+junjul <- measdiff %>% 
+  filter(Month == "Jun-Jul") %>% 
+  na.omit(T)
+junjulaov <- aov(LeafAreaDiff ~ Treatment, data = junjul)
+summary(junjulaov)
+TukeyHSD(junjulaov)
+julaug <- measdiff %>% 
+  filter(Month == "Jul-Aug") %>% 
+  na.omit(T)
+julaugaov <- aov(LeafAreaDiff ~ Treatment, data = julaug)
+summary(julaugaov)
+TukeyHSD(julaugaov)
+augoct <- measdiff %>% 
+  filter(Month == "Aug-Oct") %>% 
+  na.omit(T)
+augoctaov <- aov(LeafAreaDiff ~ Treatment, data = augoct)
+summary(augoctaov)
+TukeyHSD(augoctaov)
+octnov <- measdiff %>% 
+  filter(Month == "Oct-Nov") %>% 
+  na.omit(T)
+octnovaov <- aov(LeafAreaDiff ~ Treatment, data = octnov)
+summary(octnovaov)
+TukeyHSD(octnovaov)
+
+# anova by ecoregion
+# North Bay
+NBmeas <- measdiff %>% 
+  filter(Ecoregion == "North Bay") %>% 
+  na.omit(T)
+
+shapiro.test(NBmeas$LeafAreaDiff)
+leveneTest(LeafAreaDiff~Treatment, data = NBmeas)
+
+NBmeas_anova <- aov(LeafAreaDiff~Treatment, data = NBmeas)
+summary(NBmeas_anova)
+options(max.print=2000)
+TukeyHSD(NBmeas_anova)
+
+NBmeas_plot <- ggplot(
+  data=NBmeas,
+  aes(x=Treatment,
+      y=LeafAreaDiff,
+      group=Treatment)) +
+  ylab("Change in Leaf Area") +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month) + 
+  aes2
+
+NBmeas_plot
+
+# North Central
+NCmeas <- measdiff %>% 
+  filter(Ecoregion == "North Central") %>% 
+  na.omit(T)
+
+hist(NCmeas$LeafAreaDiff)
+shapiro.test(NCmeas$LeafAreaDiff)
+leveneTest(LeafAreaDiff~Treatment*Month, data = NCmeas)
+
+NCmeas_anova <- aov(LeafAreaDiff~Treatment*Month, data = NCmeas)
+summary(NCmeas_anova)
+options(max.print=2000)
+TukeyHSD(NCmeas_anova)
+
+NCmeas_plot <- ggplot(
+  data=NCmeas,
+  aes(x=Treatment,
+      y=LeafAreaDiff,
+      group=Treatment)) +
+  ylab("Change in Leaf Area") +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month) +
+  aes2
+
+NCmeas_plot
+
+# South Central
+SCmeas <- measdiff %>% 
+  filter(Ecoregion == "South Central") %>% 
+  na.omit(T)
+
+hist(SCmeas$LeafAreaDiff)
+shapiro.test(SCmeas$LeafAreaDiff)
+leveneTest(LeafAreaDiff~Treatment*Month, data = SCmeas)
+
+SCmeas_anova <- aov(LeafAreaDiff~Treatment*Month, data = SCmeas)
+summary(SCmeas_anova)
+options(max.print=2000)
+TukeyHSD(SCmeas_anova)
+
+SCmeas_plot <- ggplot(
+  data=SCmeas,
+  aes(x=Treatment,
+      y=LeafAreaDiff,
+      group=Treatment)) +
+  ylab("Change in Leaf Area") +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month) +
+  aes2 
+
+SCmeas_plot
+
+# South Bay
+SBmeas <- measdiff %>% 
+  filter(Ecoregion == "South Bay") %>% 
+  na.omit(T)
+
+hist(SBmeas$LeafAreaDiff)
+shapiro.test(SBmeas$LeafAreaDiff)
+leveneTest(LeafAreaDiff~Treatment*Month, data = SBmeas)
+
+SBmeas_anova <- aov(LeafAreaDiff~Treatment*Month, data = SBmeas)
+summary(SBmeas_anova)
+options(max.print=2000)
+TukeyHSD(SBmeas_anova)
+
+SBmeas_plot <- ggplot(
+  data=SBmeas,
+  aes(x=Treatment,
+      y=LeafAreaDiff,
+      group=Treatment)) +
+  ylab("Change in Leaf Area") +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month) +
+  aes2 
+
+SBmeas_plot
+
+# full graph
+# models
+measurediff <- measdiff %>% 
+  mutate(Treatment = case_when(Treatment == "Full" ~ "Full",
+                   Treatment == "Half" ~ "Half",
+                   Treatment == "Reference" ~ "Ref"))
+measurediff$Month <- factor(
+  measurediff$Month, levels = c(
+    'Mar-Apr', 'Apr-Jun', 'Jun-Jul', 'Jul-Aug',
+    'Aug-Oct', 'Oct-Nov'))
+
+# North Bay
+NBmeasure <- measurediff %>% 
+  filter(Ecoregion == "North Bay") %>% 
+  na.omit(T)
+
+hist(NBmeasure$LeafAreaDiff)
+shapiro.test(NBmeasure$LeafAreaDiff)
+leveneTest(LeafAreaDiff~Treatment*Month, data = NBmeasure)
+
+NBmeasure_anova <- aov(LeafAreaDiff~Treatment*Month, data = NBmeasure)
+summary(NBmeasure_anova)
+options(max.print=2000)
+TukeyHSD(NBmeasure_anova)
+
+NBmeasure_plot <- ggplot(
+  data=NBmeasure,
+  aes(x=Treatment,
+      y=LeafAreaDiff,
+      group=Treatment)) +
+  ylab(expression(paste("Change in Leaf Area (cm"^"2",")"))) +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month, nrow=1) +
+  theme_set(aes2) +
+  labs(title="North Bay") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  theme(strip.background =element_rect(fill="grey97"))
+
+NBmeasure_plot
+
+# North Central
+NCmeasure <- measurediff %>% 
+  filter(Ecoregion == "North Central") %>% 
+  na.omit(T)
+
+hist(NCmeasure$LeafAreaDiff)
+shapiro.test(NCmeasure$LeafAreaDiff)
+leveneTest(LeafAreaDiff~Treatment*Month, data = NCmeasure)
+
+NCmeasure_anova <- aov(LeafAreaDiff~Treatment*Month, data = NCmeasure)
+summary(NCmeasure_anova)
+options(max.print=2000)
+TukeyHSD(NCmeasure_anova)
+
+NCmeasure_plot <- ggplot(
+  data=NCmeasure,
+  aes(x=Treatment,
+      y=LeafAreaDiff,
+      group=Treatment)) +
+  ylab(expression(paste("Change in Leaf Area (cm"^"2",")"))) +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month, nrow=1) +
+  theme_set(aes2) +
+  labs(title="North Central") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  theme(strip.background =element_rect(fill="grey97"))
+
+NCmeasure_plot
+
+# South Central
+SCmeasure <- measurediff %>% 
+  filter(Ecoregion == "South Central") %>% 
+  na.omit(T)
+
+hist(SCmeasure$LeafAreaDiff)
+shapiro.test(SCmeasure$LeafAreaDiff)
+leveneTest(LeafAreaDiff~Treatment*Month, data = SCmeasure)
+
+SCmeasure_anova <- aov(LeafAreaDiff~Treatment*Month, data = SCmeasure)
+summary(SCmeasure_anova)
+options(max.print=2000)
+TukeyHSD(SCmeasure_anova)
+
+SCmeasure_plot <- ggplot(
+  data=SCmeasure,
+  aes(x=Treatment,
+      y=LeafAreaDiff,
+      group=Treatment)) +
+  ylab(expression(paste("Change in Leaf Area (cm"^"2",")"))) +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_grid(~factor(Month, levels=c('Mar-Apr', 'Apr-Jun', 'Jun-Jul', 'Jul-Aug', 'Aug-Oct', 'Oct-Nov'))) +
+  geom_signif(data = data.frame(Month = c("Apr-Jun"), 
+                                Treatment = c("Half", "Ref")), 
+              aes(y_position = 4.3, xmin = 2, xmax = 3, 
+                  annotations = c("*")), tip_length = 0.01, manual = T) +
+  theme_set(aes2) +
+  labs(title="South Central") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  theme(strip.background =element_rect(fill="grey97"))
+
+SCmeasure_plot
+
+# South Bay
+SBmeasure <- measurediff %>% 
+  filter(Ecoregion == "South Bay") %>% 
+  na.omit(T)
+
+hist(SBmeasure$LeafAreaDiff)
+shapiro.test(SBmeasure$LeafAreaDiff)
+leveneTest(LeafAreaDiff~Treatment*Month, data = SBmeasure)
+
+SBmeasure_anova <- aov(LeafAreaDiff~Treatment*Month, data = SBmeasure)
+summary(SBmeasure_anova)
+options(max.print=2000)
+TukeyHSD(SBmeasure_anova)
+
+SBmeasure_plot <- ggplot(
+  data=SBmeasure,
+  aes(x=Treatment,
+      y=LeafAreaDiff,
+      group=Treatment)) +
+  ylab(expression(paste("Change in Leaf Area (cm"^"2",")"))) +
+  geom_boxplot(aes(fill = Treatment)) +
+  geom_signif(data = data.frame(Month = c("Jul-Aug"), 
+                                Treatment = c("Half", "Ref")), 
+              aes(y_position = c(0.5, -1), xmin = c(2,1), xmax = 3, 
+                  annotations = c("*", "**")), tip_length = 0.01, manual = T) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_grid(~factor(Month, levels=c('Mar-Apr', 'Apr-Jun', 'Jun-Jul', 'Jul-Aug', 'Aug-Oct', 'Oct-Nov'))) +
+  labs(title="South Bay") +
+  theme_set(aes2) +
+  theme(strip.background =element_rect(fill="grey97"))
+  
+SBmeasure_plot
+
+measure_combined <- NBmeasure_plot + NCmeasure_plot + SCmeasure_plot + SBmeasure_plot + plot_layout(ncol=1, axis_titles = "collect")
+measure_combined
+```
+
+
+### extra code
+### total leaf area (not very clean)
+```{r}
+eelgrass_denarea_raw <- merge(
+  eelgrass_density, eelgrass_measures, 
+  by = c("Month", "Ecoregion", "Treatment", "Replicate"), 
+  all = T) %>% 
+  mutate(denarea = meanDensity*meanLeafArea)
+
+eelgrass_denarea <- eelgrass_denarea_raw %>% 
+  mutate(sqrtdenarea = sqrt(denarea)) %>% 
+  mutate(Date = case_when(Month == "Mar" ~ "2024-03-11",
+                   Month == "Apr" ~ "2024-04-29",
+                   Month == "Jun" ~ "2024-06-04",
+                   Month == "Jul" ~ "2024-07-11",
+                   Month == "Aug" ~ "2024-08-29",
+                   Month == "Oct" ~ "2024-10-07",
+                   Month == "Nov" ~ "2024-11-04",
+                   TRUE ~ "other")) %>% 
+  mutate(denarealetters = 
+           case_when(Ecoregion == "North Bay" ~ "A",
+                     Ecoregion == "North Central" ~ "A",
+                     Ecoregion == "South Central" ~ "A",
+                     Ecoregion == "South Bay" ~ "B")) %>% 
+  mutate(trtdenarealetters = 
+           case_when(Treatment == "Full" ~ "A",
+                     Treatment == "Half" ~ "A",
+                     Treatment == "Reference" ~ "A")) %>% 
+  mutate(regtrtdenarealetters = 
+           case_when(Ecoregion == "North Bay" & Treatment == "Reference" ~ "AB",
+                     Ecoregion == "North Bay" & Treatment == "Half" ~ "AB",
+                     Ecoregion == "North Bay" & Treatment == "Full" ~ "ABC",
+                     Ecoregion == "North Central" & Treatment == "Reference" ~ "ABCD",
+                     Ecoregion == "North Central" & Treatment == "Half" ~ "ABCD",
+                     Ecoregion == "North Central" & Treatment == "Full" ~ "ABC",
+                     Ecoregion == "South Central" & Treatment == "Reference" ~ "ABCD",
+                     Ecoregion == "South Central" & Treatment == "Half" ~ "A",
+                     Ecoregion == "South Central" & Treatment == "Full" ~ "A",
+                     Ecoregion == "South Bay" & Treatment == "Reference" ~ "D",
+                     Ecoregion == "South Bay" & Treatment == "Half" ~ "CD",
+                     Ecoregion == "South Bay" & Treatment == "Full" ~ "BCD")) %>% 
+  mutate(POSIXdate = as.Date(Date, format = "%Y-%m-%d")) %>% 
+  group_by(POSIXdate, Treatment) %>% #Ecoregion
+  summarise(meandenarea = mean(denarea),
+            sddenarea = sd(denarea,na.rm=T))
+
+hist(eelgrass_denarea$sqrtdenarea)
+shapiro.test(eelgrass_denarea$sqrtdenarea)
+leveneTest(sqrtdenarea~Treatment*Ecoregion, data=eelgrass_denarea)
+
+denarea_trtaov <- aov(sqrtdenarea~Treatment*Ecoregion, data = eelgrass_denarea)
+summary(denarea_trtaov)
+TukeyHSD(denarea_trtaov)
+
+regtrt_denarea_cld <- denarea_trtaov %>%
+  emmeans(~Ecoregion*Treatment) %>%
+  cld(Letters = letters, adjust = "Tukey", sort = F, alpha = 0.1)
+regtrt_denarea_cld
+
+denarea_plot <- ggplot(
+  data=eelgrass_denarea, aes(
+    x=POSIXdate,
+    y=meandenarea,
+    group=factor(Treatment),
+    col=Treatment)) +
+  ylab(expression(paste("Total Leaf Area (cm"^"2",")"))) +
+  geom_point(size=3,
+             position=position_dodge2(10)) +
+  geom_line() +
+  geom_errorbar(aes(ymin=meandenarea-sddenarea,
+                    ymax=meandenarea+sddenarea),
+                width=10,
+                position=position_dodge2(10)) +
+  theme_set(aes2) +
+  theme(legend.position = "right",
+    legend.box.background = element_rect(
+      colour = "black", linewidth = 0.8)) +
+  labs(fill="Treatment") +
+  labs(color="Treatment") +
+  scale_color_manual(values=trtpal) +
+  scale_fill_manual(values=trtpal) +
+  scale_x_date(name = "Month", date_breaks = "1 month",
+                   date_labels = "%b")
+  #facet_wrap(~Ecoregion, ncol=2) +
+  #theme(strip.background =element_rect(fill="grey97"))
+  
+denarea_plot
+
+regiondenarea_letters <- group_by(eelgrass_denarea, Ecoregion, denarealetters) %>% 
+  summarise(mean=mean(denarea), quant=quantile(denarea, probs=0.75)) %>% 
+  arrange(desc(mean))
+
+trtdenarea_letters <- group_by(eelgrass_denarea, Treatment, trtdenarealetters) %>% 
+  summarise(mean=mean(denarea), quant=quantile(denarea, probs=0.75)) %>% 
+  arrange(desc(mean))
+
+regtrtdenarea_letters <- group_by(eelgrass_denarea, Ecoregion, Treatment, regtrtdenarealetters) %>% 
+  summarise(mean=mean(denarea), max=max(denarea)) %>% 
+  arrange(desc(mean))
+
+region_denarea <- ggplot(
+  data=eelgrass_denarea_raw, aes(
+    x=Ecoregion,
+    y=denarea,
+    fill=Ecoregion
+  )) +
+  xlab("Ecoregion") +
+  ylab(expression(paste("Total Leaf Area (cm"^"2",")"))) +
+  geom_boxplot() +
+   scale_fill_manual(
+    values=rev(regionpal)
+  ) +
+   geom_text(data = regiondenarea_letters, aes(
+    x = Ecoregion, 
+    y = quant, 
+    label=denarealetters,
+    vjust = -1,
+    hjust = -1)) +
+  theme(legend.position = "none") +
+    theme_set(aes2)
+
+region_denarea
+
+trt_denarea <- ggplot(
+  data=eelgrass_denarea_raw, aes(
+    x=Treatment,
+    y=denarea,
+    fill=Treatment
+  )) +
+  xlab("Treatment") +
+  ylab(expression(paste("Total Leaf Area (cm"^"2",")"))) +
+  geom_boxplot() +
+   scale_fill_manual(
+    values=rev(trtpal)
+  ) +
+   geom_text(data = trtdenarea_letters, aes(
+    x = Treatment, 
+    y = quant, 
+    label=trtdenarealetters,
+    vjust = -1,
+    hjust = -1)) +
+  theme(legend.position = "none") +
+    theme_set(aes2)
+
+trt_denarea
+
+regtrt_denarea <- ggplot(
+  data=eelgrass_denarea_raw, aes(
+    x=Ecoregion,
+    y=denarea,
+    fill=Treatment
+  )) +
+  xlab("Ecoregion") +
+  ylab(expression(paste("Total Leaf Area (cm"^"2",")"))) +
+  geom_boxplot() +
+   scale_fill_manual(
+    values=(trtpal)
+  ) +
+   geom_text(data = regtrtdenarea_letters, aes(
+    x = Ecoregion, 
+    y = max, 
+    label=regtrtdenarealetters,
+    vjust = -1,
+    hjust = 0.4),
+    position = position_dodge(width=0.8)) +
+    theme_set(aes2) +
+    theme(legend.position = "right",
+          legend.box.background = element_rect(
+          colour = "black", linewidth = 0.8))
+
+regtrt_denarea
+
+# models
+denareadiff <- read.csv("denareadiff.csv")
+denareadiff <- denareadiff %>% 
+  mutate(Treatment = case_when(Treatment == "Full" ~ "Full",
+                   Treatment == "Half" ~ "Half",
+                   Treatment == "Reference" ~ "Ref"))
+denareadiff$Month <- factor(
+  denareadiff$Month, levels = c(
+    'Mar-Apr', 'Apr-Jun', 'Jun-Jul', 'Jul-Aug',
+    'Aug-Oct', 'Oct-Nov'))
+
+denareadiff_summary <- denareadiff %>% 
+  group_by(Month, Treatment) %>% 
+  summarise(meandenareadiff = mean(DenAreaDiff),
+            sddenareadiff = sd(DenAreaDiff))
+
+denarea_diff_plot <- ggplot(
+  data = denareadiff_summary, aes(
+    y=meandenareadiff,
+    x=Month,
+    group=fct_relevel(Treatment, 'Full', 'Half', 'Reference'))) +
+  ylab(expression(paste("Change in Total Leaf Area (# of plants/m"^"2",")"))) +
+  geom_bar(position = 'dodge', stat='identity', 
+           aes(fill = Treatment)) +
+  geom_errorbar(aes(ymin=meandenareadiff-sddenareadiff, 
+                    ymax=meandenareadiff+sddenareadiff),
+                position = position_dodge(width = 0.9)) +
+  theme(aes2) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"))
+  #facet_wrap(~Ecoregion, ncol = 2)
+
+denarea_diff_plot
+
+# North Bay
+NBdenarea <- denareadiff %>% 
+  filter(Ecoregion == "North Bay") %>% 
+  na.omit(T)
+
+hist(NBdenarea$DenAreaDiff)
+shapiro.test(NBdenarea$DenAreaDiff)
+leveneTest(DenAreaDiff~Treatment*Month, data = NBdenarea)
+
+NBdenarea_anova <- aov(DenAreaDiff~Treatment*Month, data = NBdenarea)
+summary(NBdenarea_anova)
+options(max.print=2000)
+TukeyHSD(NBdenarea_anova)
+
+NBdenarea_plot <- ggplot(
+  data=NBdenarea,
+  aes(x=Treatment,
+      y=DenAreaDiff,
+      group=Treatment)) +
+  ylab(expression(paste("Change in Total Leaf Area (cm"^"2",")"))) +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month, nrow=1) +
+  aes2 +
+  labs(title="North Bay") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank()) +
+  theme(strip.background =element_rect(fill="grey97"))
+
+NBdenarea_plot
+
+# North Central
+NCdenarea <- denareadiff %>% 
+  filter(Ecoregion == "North Central") %>% 
+  na.omit(T)
+
+hist(NCdenarea$DenAreaDiff)
+shapiro.test(NCdenarea$DenAreaDiff)
+leveneTest(DenAreaDiff~Treatment*Month, data = NCdenarea)
+
+NCdenarea_anova <- aov(DenAreaDiff~Treatment*Month, data = NCdenarea)
+summary(NCdenarea_anova)
+options(max.print=2000)
+TukeyHSD(NCdenarea_anova)
+
+NCdenarea_plot <- ggplot(
+  data=NCdenarea,
+  aes(x=Treatment,
+      y=DenAreaDiff,
+      group=Treatment)) +
+  ylab(expression(paste("Change in Total Leaf Area (cm"^"2",")"))) +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month, nrow=1) +
+  aes2 +
+  labs(title="North Central") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank()) +
+  theme(strip.background =element_rect(fill="grey97"))
+
+NCdenarea_plot
+
+# South Central
+SCdenarea <- denareadiff %>% 
+  filter(Ecoregion == "South Central") %>% 
+  na.omit(T)
+
+hist(SCdenarea$DenAreaDiff)
+shapiro.test(SCdenarea$DenAreaDiff)
+leveneTest(DenAreaDiff~Treatment*Month, data = SCdenarea)
+
+SCdenarea_anova <- aov(DenAreaDiff~Treatment*Month, data = SCdenarea)
+summary(SCdenarea_anova)
+options(max.print=2000)
+TukeyHSD(SCdenarea_anova)
+
+SCdenarea_plot <- ggplot(
+  data=SCdenarea,
+  aes(x=Treatment,
+      y=DenAreaDiff,
+      group=Treatment)) +
+  ylab(expression(paste("Change in Total Leaf Area (cm"^"2",")"))) +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month, nrow=1) +
+  aes2 +
+  labs(title="South Central") +
+  theme(axis.title.y = element_blank(),
+        axis.title.x = element_blank()) +
+  theme(strip.background =element_rect(fill="grey97"))
+
+SCdenarea_plot
+
+# South Bay
+SBdenarea <- denareadiff %>% 
+  filter(Ecoregion == "South Bay") %>% 
+  na.omit(T)
+
+hist(SBdenarea$DenAreaDiff)
+shapiro.test(SBdenarea$DenAreaDiff)
+leveneTest(DenAreaDiff~Treatment*Month, data = SBdenarea)
+
+SBdenarea_anova <- aov(DenAreaDiff~Treatment*Month, data = SBdenarea)
+summary(SBdenarea_anova)
+options(max.print=2000)
+TukeyHSD(SBdenarea_anova)
+
+SBdenarea_plot <- ggplot(
+  data=SBdenarea,
+  aes(x=Treatment,
+      y=DenAreaDiff,
+      group=Treatment)) +
+  ylab(expression(paste("Change in Total Leaf Area (cm"^"2",")"))) +
+  geom_boxplot(aes(fill = Treatment)) +
+  theme(legend.position='right') +
+  scale_fill_manual(values=trtpal) +
+  facet_wrap(~Month, nrow=1) +
+  aes2 +
+  labs(title="South Bay") +
+  theme(axis.title.y=element_blank(),
+        axis.title.x=element_blank()) +
+  theme(strip.background =element_rect(fill="grey97"))
+
+SBdenarea_plot
+
+denarea_combined <- ggarrange(NBdenarea_plot, NCdenarea_plot, SCdenarea_plot, SBdenarea_plot, ncol=1, nrow=4)
+annotate_figure(denarea_combined, 
+         left = text_grob(
+           expression(paste("Change in Total Leaf Area (cm"^"2",")")),
+           rot = 90),
+         bottom = text_grob("Treatment", hjust = 0.2))
+```
+
+### [water quality by month]
+```{r}
+# subset data by month
+nov2023 <- dataonly %>% 
+  filter(Month.Year == "112023")
+dec2023 <- dataonly %>% 
+  filter(Month.Year == "122023")
+jan2024 <- dataonly %>% 
+  filter(Month.Year == "12024")
+feb2024 <- dataonly %>% 
+  filter(Month.Year == "22024")
+mar2024 <- dataonly %>% 
+  filter(Month.Year == "32024")
+apr2024 <- dataonly %>% 
+  filter(Month.Year == "42024")
+may2024 <- dataonly %>% 
+  filter(Month.Year == "52024")
+jun2024 <- dataonly %>% 
+  filter(Month.Year == "62024")
+jul2024 <- dataonly %>% 
+  filter(Month.Year == "72024")
+aug2024 <- dataonly %>% 
+  filter(Month.Year == "82024")
+sep2024 <- dataonly %>% 
+  filter(Month.Year == "92024")
+oct2024 <- dataonly %>% 
+  filter(Month.Year == "10024")
+nov2024 <- dataonly %>% 
+  filter(Month.Year == "11024")
+```
+
+### monthly summaries
+# nov 2023
+```{r}
+nov2023sal <- ggplot(data=nov2023, 
+                     aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-11-01"),
+      as.POSIXct("2023-12-01"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+nov2023sal
+
+nov2023temp <- ggplot(data=nov2023, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-11-01"),
+      as.POSIXct("2023-12-01"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+nov2023temp
+  
+nov2023pH <- ggplot(data=nov2023, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-11-01"),
+      as.POSIXct("2023-12-01"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+nov2023pH
+  
+nov2023DO <- ggplot(data=nov2023, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-11-01"),
+      as.POSIXct("2023-12-01"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+nov2023DO
+  
+nov2023DOconc <- ggplot(data=nov2023, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-11-01"),
+      as.POSIXct("2023-12-01"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+nov2023DOconc
+
+nov2023turb <- ggplot(data=nov2023, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-11-01"),
+      as.POSIXct("2023-12-01"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+nov2023turb
+
+nov2023depth <- ggplot(data=nov2023, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (November 2023)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-11-01"),
+      as.POSIXct("2023-12-01"))) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+nov2023depth
+
+nov2023combined <- nov2023sal/nov2023temp/nov2023pH/nov2023DO/nov2023DOconc/nov2023turb/nov2023depth
+
+nov2023combined
+```
+
+# dec 2023
+```{r}
+dec2023sal <- ggplot(data=dec2023, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-12-01"),
+      as.POSIXct("2023-12-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+dec2023sal
+
+dec2023temp <- ggplot(data=dec2023, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-12-01"),
+      as.POSIXct("2023-12-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+
+  
+dec2023temp
+  
+dec2023pH <- ggplot(data=dec2023, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-12-01"),
+      as.POSIXct("2023-12-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+dec2023pH
+  
+dec2023DO <- ggplot(data=dec2023, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-12-01"),
+      as.POSIXct("2023-12-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+dec2023DO
+
+dec2023DOconc <- ggplot(data=dec2023, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-12-01"),
+      as.POSIXct("2023-12-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+dec2023DOconc
+
+dec2023turb <- ggplot(data=dec2023, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-12-01"),
+      as.POSIXct("2023-12-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+dec2023turb
+
+dec2023depth <- ggplot(data=depthdec2023, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (December 2023)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2023-12-01"),
+      as.POSIXct("2023-12-31"))) +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+dec2023depth
+
+dec2023combined <- dec2023sal/dec2023temp/dec2023pH/dec2023DO/dec2023DOconc/dec2023turb/dec2023depth
+
+dec2023combined
+```
+
+# jan 2024
+```{r}
+jan2024sal <- ggplot(data=jan2024, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-01-01"),
+      as.POSIXct("2024-01-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+jan2024sal
+
+jan2024temp <- ggplot(data=jan2024, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-01-01"),
+      as.POSIXct("2024-01-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jan2024temp
+  
+jan2024pH <- ggplot(data=jan2024, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-01-01"),
+      as.POSIXct("2024-01-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jan2024pH
+  
+jan2024DO <- ggplot(data=jan2024, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-01-01"),
+      as.POSIXct("2024-01-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jan2024DO
+  
+jan2024DOconc <- ggplot(data=jan2024, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-01-01"),
+      as.POSIXct("2024-01-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jan2024DOconc
+
+jan2024turb <- ggplot(data=jan2024, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-01-01"),
+      as.POSIXct("2024-01-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jan2024turb
+
+jan2024depth <- ggplot(data=depthjan2024, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (January 2024)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-01-01"),
+      as.POSIXct("2024-01-31"))) + 
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+jan2024depth
+
+jan2024combined <- jan2024sal/jan2024temp/jan2024pH/jan2024DO/jan2024DOconc/jan2024turb/jan2024depth
+
+jan2024combined
+```
+
+# feb 2024
+```{r}
+feb2024sal <- ggplot(data=feb2024, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-02-01"),
+      as.POSIXct("2024-02-28"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+feb2024sal
+
+feb2024temp <- ggplot(data=feb2024, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-02-01"),
+      as.POSIXct("2024-02-28"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+feb2024temp
+  
+feb2024pH <- ggplot(data=feb2024, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-02-01"),
+      as.POSIXct("2024-02-28"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+feb2024pH
+  
+feb2024DO <- ggplot(data=feb2024, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-02-01"),
+      as.POSIXct("2024-02-28"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+feb2024DO
+
+feb2024DOconc <- ggplot(data=feb2024, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-02-01"),
+      as.POSIXct("2024-02-28"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+feb2024DOconc
+
+feb2024turb <- ggplot(data=feb2024, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-02-01"),
+      as.POSIXct("2024-02-28"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+feb2024turb
+
+feb2024depth <- ggplot(data=depthfeb2024, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (February 2024)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-02-01"),
+      as.POSIXct("2024-02-28"))) + 
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+feb2024depth
+
+feb2024combined <- feb2024sal/feb2024temp/feb2024pH/feb2024DO/feb2024DOconc/feb2024turb/feb2024depth
+
+feb2024combined
+```
+
+# mar 2024
+```{r}
+mar2024sal <- ggplot(data=mar2024, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-03-01"),
+      as.POSIXct("2024-03-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+mar2024sal
+
+mar2024temp <- ggplot(data=mar2024, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-03-01"),
+      as.POSIXct("2024-03-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+mar2024temp
+
+mar2024pH <- ggplot(data=mar2024, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-03-01"),
+      as.POSIXct("2024-03-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+mar2024pH
+
+mar2024DO <- ggplot(data=mar2024, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-03-01"),
+      as.POSIXct("2024-03-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+mar2024DO
+
+mar2024DOconc <- ggplot(data=mar2024, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-03-01"),
+      as.POSIXct("2024-03-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+mar2024DOconc
+
+mar2024turb <- ggplot(data=mar2024, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-03-01"),
+      as.POSIXct("2024-03-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+mar2024turb
+
+mar2024depth <- ggplot(data=depthmar2024, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (March 2024)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-03-01"),
+      as.POSIXct("2024-03-31")))+ 
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+mar2024depth
+
+mar2024combined <- mar2024sal/mar2024temp/mar2024pH/mar2024DO/mar2024DOconc/mar2024turb/mar2024depth
+
+mar2024combined
+```
+
+# apr 2024
+```{r}
+apr2024sal <- ggplot(data=apr2024, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-04-01"),
+      as.POSIXct("2024-04-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+apr2024sal
+
+apr2024temp <- ggplot(data=apr2024, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-04-01"),
+      as.POSIXct("2024-04-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+apr2024temp
+
+apr2024pH <- ggplot(data=apr2024, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-04-01"),
+      as.POSIXct("2024-04-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+apr2024pH
+  
+apr2024DO <- ggplot(data=apr2024, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-04-01"),
+      as.POSIXct("2024-04-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+apr2024DO
+
+apr2024DOconc <- ggplot(data=apr2024, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-04-01"),
+      as.POSIXct("2024-04-30")))+
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+apr2024DOconc
+
+apr2024turb <- ggplot(data=apr2024, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-04-01"),
+      as.POSIXct("2024-04-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+apr2024turb
+
+apr2024depth <- ggplot(data=depthapr2024, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (April 2024)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-04-01"),
+      as.POSIXct("2024-04-30")))+ 
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+apr2024depth
+
+apr2024combined <- apr2024sal/apr2024temp/apr2024pH/apr2024DO/apr2024DOconc/apr2024turb/apr2024depth
+
+apr2024combined
+```
+
+# may 2024
+```{r}
+may2024sal <- ggplot(data=may2024, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-05-01"),
+      as.POSIXct("2024-05-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+may2024sal
+
+may2024temp <- ggplot(data=may2024, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-05-01"),
+      as.POSIXct("2024-05-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+may2024temp
+
+may2024pH <- ggplot(data=may2024, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-05-01"),
+      as.POSIXct("2024-05-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+may2024pH
+
+may2024DO <- ggplot(data=may2024, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-05-01"),
+      as.POSIXct("2024-05-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+may2024DO
+
+may2024DOconc <- ggplot(data=may2024, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-05-01"),
+      as.POSIXct("2024-05-31")))+
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+may2024DOconc
+
+may2024turb <- ggplot(data=may2024, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-05-01"),
+      as.POSIXct("2024-05-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+may2024turb
+
+may2024depth <- ggplot(data=depthmay2024, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (May 2024)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-05-01"),
+      as.POSIXct("2024-05-31")))+ 
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+may2024depth
+
+may2024combined <- may2024sal/may2024temp/may2024pH/may2024DO/may2024DOconc/may2024turb/may2024depth
+
+may2024combined
+```
+
+# jun 2024
+```{r}
+jun2024sal <- ggplot(data=jun2024, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-06-01"),
+      as.POSIXct("2024-06-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+jun2024sal
+
+jun2024temp <- ggplot(data=jun2024, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-06-01"),
+      as.POSIXct("2024-06-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jun2024temp
+
+jun2024pH <- ggplot(data=jun2024, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-06-01"),
+      as.POSIXct("2024-06-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jun2024pH
+
+jun2024DO <- ggplot(data=jun2024, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-06-01"),
+      as.POSIXct("2024-06-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jun2024DO
+  
+jun2024DOconc <- ggplot(data=jun2024, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-06-01"),
+      as.POSIXct("2024-06-30")))+
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jun2024DOconc
+
+jun2024turb <- ggplot(data=jun2024, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-06-01"),
+      as.POSIXct("2024-06-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jun2024turb
+
+jun2024depth <- ggplot(data=depthjun2024, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (June 2024)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-06-01"),
+      as.POSIXct("2024-06-30")))+ 
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+jun2024depth
+
+jun2024combined <- jun2024sal/jun2024temp/jun2024pH/jun2024DO/jun2024DOconc/jun2024turb/jun2024depth
+
+jun2024combined
+```
+
+# jul 2024
+```{r}
+jul2024sal <- ggplot(data=jul2024, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-07-01"),
+      as.POSIXct("2024-07-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+jul2024sal
+
+
+jul2024temp <- ggplot(data=jul2024, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-07-01"),
+      as.POSIXct("2024-07-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jul2024temp
+
+jul2024pH <- ggplot(data=jul2024, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-07-01"),
+      as.POSIXct("2024-07-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jul2024pH
+
+jul2024DO <- ggplot(data=jul2024, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-07-01"),
+      as.POSIXct("2024-07-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jul2024DO
+
+jul2024DOconc <- ggplot(data=jul2024, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-07-01"),
+      as.POSIXct("2024-07-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jul2024DOconc
+
+jul2024turb <- ggplot(data=jul2024, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-07-01"),
+      as.POSIXct("2024-07-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+jul2024turb
+
+jul2024depth <- ggplot(data=depthjul2024, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (July 2024)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-07-01"),
+      as.POSIXct("2024-07-31")))+ 
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+jul2024depth
+
+jul2024combined <- jul2024sal/jul2024temp/jul2024pH/jul2024DO/jul2024DOconc/jul2024turb/jul2024depth
+
+jul2024combined
+```
+
+# aug 2024
+```{r}
+aug2024sal <- ggplot(data=aug2024, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-08-01"),
+      as.POSIXct("2024-08-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+aug2024sal
+
+aug2024temp <- ggplot(data=aug2024, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-08-01"),
+      as.POSIXct("2024-08-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+aug2024temp
+  
+aug2024pH <- ggplot(data=aug2024, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-08-01"),
+      as.POSIXct("2024-08-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+aug2024pH
+  
+aug2024DO <- ggplot(data=aug2024, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-08-01"),
+      as.POSIXct("2024-08-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+aug2024DO
+
+aug2024DOconc <- ggplot(data=aug2024, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-08-01"),
+      as.POSIXct("2024-08-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+aug2024DOconc
+
+aug2024turb <- ggplot(data=aug2024, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-08-01"),
+      as.POSIXct("2024-08-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+aug2024turb
+
+aug2024depth <- ggplot(data=depthaug2024, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (August 2024)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-08-01"),
+      as.POSIXct("2024-08-31")))+ 
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+aug2024depth
+
+aug2024combined <- aug2024sal/aug2024temp/aug2024pH/aug2024DO/aug2024DOconc/aug2024turb/aug2024depth
+
+aug2024combined
+```
+
+# sep 2024
+```{r}
+sep2024sal <- ggplot(data=sep2024, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-09-01"),
+      as.POSIXct("2024-09-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+sep2024sal
+
+sep2024temp <- ggplot(data=sep2024, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-09-01"),
+      as.POSIXct("2024-09-30")))+
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+sep2024temp
+
+sep2024pH <- ggplot(data=sep2024, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-09-01"),
+      as.POSIXct("2024-09-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+sep2024pH
+
+sep2024DO <- ggplot(data=sep2024, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-09-01"),
+      as.POSIXct("2024-09-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+sep2024DO
+
+sep2024DOconc <- ggplot(data=sep2024, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-09-01"),
+      as.POSIXct("2024-09-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+sep2024DOconc
+
+sep2024turb <- ggplot(data=sep2024, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-09-01"),
+      as.POSIXct("2024-09-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+sep2024turb
+
+sep2024depth <- ggplot(data=depthsep2024, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (September 2024)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-09-01"),
+      as.POSIXct("2024-09-30")))+ 
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+sep2024depth
+
+sep2024combined <- sep2024sal/sep2024temp/sep2024pH/sep2024DO/sep2024DOconc/sep2024turb/sep2024depth
+
+sep2024combined
+```
+
+# oct 2024
+```{r}
+oct2024sal <- ggplot(data=oct2024, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-10-01"),
+      as.POSIXct("2024-10-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+oct2024sal
+
+oct2024temp <- ggplot(data=oct2024, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-10-01"),
+      as.POSIXct("2024-10-31"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+oct2024temp
+
+oct2024pH <- ggplot(data=oct2024, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-10-01"),
+      as.POSIXct("2024-10-31")))  +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+oct2024pH
+
+oct2024DO <- ggplot(data=oct2024, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-10-01"),
+      as.POSIXct("2024-10-31")))  +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+oct2024DO
+
+oct2024DOconc <- ggplot(data=oct2024, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-10-01"),
+      as.POSIXct("2024-10-31")))  +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+oct2024DOconc
+
+oct2024turb <- ggplot(data=oct2024, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-10-01"),
+      as.POSIXct("2024-10-31")))  +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+oct2024turb
+
+oct2024depth <- ggplot(data=depthoct2024, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (October 2024)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-10-01"),
+      as.POSIXct("2024-10-31"))) + 
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+oct2024depth
+
+oct2024combined <- oct2024sal/oct2024temp/oct2024pH/oct2024DO/oct2024DOconc/oct2024turb/oct2024depth
+
+oct2024combined
+```
+
+# nov 2024
+```{r}
+nov2024sal <- ggplot(data=nov2024, aes(x=UNIX, y=Sal.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Salinity (psu)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-11-01"),
+      as.POSIXct("2024-11-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(linewidth = 1.5),
+                               title="Ecoregion"))
+  
+nov2024sal
+
+nov2024temp <- ggplot(data=nov2024, aes(x=UNIX, y=Temp..C, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Temp C") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-11-01"),
+      as.POSIXct("2024-11-30")))+
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+nov2024temp
+
+nov2024pH <- ggplot(data=nov2024, aes(x=UNIX, y=pH.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-11-01"),
+      as.POSIXct("2024-11-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+nov2024pH
+
+nov2024DO <- ggplot(data=nov2024, aes(x=UNIX, y=ODO...sat, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO %") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-11-01"),
+      as.POSIXct("2024-11-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+nov2024DO
+
+nov2024DOconc <- ggplot(data=nov2024, aes(x=UNIX, y=ODO.mg.L.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO mg/L") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-11-01"),
+      as.POSIXct("2024-11-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+nov2024DOconc
+
+nov2024turb <- ggplot(data=nov2024, aes(x=UNIX, y=Turbidity.errors, col=site)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("Turbidity (FNU)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-11-01"),
+      as.POSIXct("2024-11-30"))) +
+  theme_bw() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position = "none")
+  
+nov2024turb
+
+nov2024depth <- ggplot(data=depthnov2024, aes(x=UNIX, y=Depth.adjusted, col=site)) +
+  geom_line() +
+  xlab("Date (November 2024)") +
+  ylab ("Depth m") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = c(
+      as.POSIXct("2024-11-01"),
+      as.POSIXct("2024-11-30")))+ 
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=45, vjust = 0.7),
+        legend.position = "none")
+  
+nov2024depth
+
+nov2024combined <- nov2024sal/nov2024temp/nov2024pH/nov2024DO/nov2024DOconc/nov2024turb/nov2024depth
+
+nov2024combined
+```
+
+
+### water quality bar plot by month and by ecoregion
+```{r}
+# temperature
+tempbars <- ggplot(data = wq_summary, 
+                   aes(x = month,
+                       y = Temp..C_mean,
+                       group = site,
+                       color = site)) +
+  xlab("Month") +
+  ylab(expression("Temperature " (degree*C))) + 
+  coord_cartesian(ylim=c(13.5,26)) +
+  geom_line(linewidth=1.2) +
+  geom_point(size=3) +
+  geom_errorbar(aes(ymin=Temp..C_mean-Temp..C_sd, 
+                    ymax=Temp..C_mean+Temp..C_sd), 
+                    width=.5,
+                    linewidth=0.7,
+                    position=position_dodge(0)) + 
+  theme(legend.position = "top",
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal)
+
+tempbars
+
+# pH
+pHbars <- ggplot(data = wq_summary, 
+                   aes(x = month,
+                       y = pH.adjusted_mean,
+                       group = site,
+                       color = site)) +
+  xlab("Month") +
+  ylab(expression("pH")) + 
+  coord_cartesian(ylim=c(7.9,8.55)) +
+  geom_line(linewidth=1.2) +
+  geom_point(size=3) +
+  geom_errorbar(aes(ymin=pH.adjusted_mean-pH.adjusted_sd, 
+                    ymax=pH.adjusted_mean+pH.adjusted_sd), 
+                    width=.5,
+                    linewidth=0.7,
+                    position=position_dodge(0)) + 
+  theme(legend.position = "none",
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal)
+
+pHbars
+
+# salinity
+salbars <- ggplot(data = wq_summary, 
+                   aes(x = month,
+                       y = Sal.adjusted_mean,
+                       group = site,
+                       color = site)) +
+  xlab("Month") +
+  ylab(expression("Salinity (PSU)")) + 
+  coord_cartesian(ylim=c(28,36)) +
+  geom_line(linewidth=1.2) +
+  geom_point(size=3) +
+  geom_errorbar(aes(ymin=Sal.adjusted_mean-Sal.adjusted_sd, 
+                    ymax=Sal.adjusted_mean+Sal.adjusted_sd), 
+                    width=.5,
+                    linewidth=0.7,
+                    position=position_dodge(0)) + 
+ theme(legend.position = "none",
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal)
+
+salbars
+
+# DO%
+DObars <- ggplot(data = wq_summary, 
+                   aes(x = month,
+                       y = ODO...sat_mean,
+                       group = site,
+                       color = site)) +
+  xlab("Month") +
+  ylab(expression("DO (%)")) + 
+  coord_cartesian(ylim=c(75,125)) +
+  geom_line(linewidth=1.2) +
+  geom_point(size=3) +
+  geom_errorbar(aes(ymin=ODO...sat_mean-ODO...sat_sd, 
+                    ymax=ODO...sat_mean+ODO...sat_sd), 
+                    width=.5,
+                    linewidth=0.7,
+                    position=position_dodge(0)) + 
+  theme(legend.position = "none",
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal)
+
+DObars
+
+# DO concentration
+DOconcbars <- ggplot(data = wq_summary, 
+                   aes(x = month,
+                       y = ODO.mg.L.adjusted_mean,
+                       group = site,
+                       color = site)) +
+  xlab("Month") +
+  ylab(expression("DO (mg/L)")) + 
+  coord_cartesian(ylim=c(3.5,9.75)) +
+  geom_line(linewidth=1.2) +
+  geom_point(size=3) +
+  geom_errorbar(aes(ymin=ODO.mg.L.adjusted_mean-ODO.mg.L.adjusted_sd, 
+                    ymax=ODO.mg.L.adjusted_mean+ODO.mg.L.adjusted_sd), 
+                    width=.5,
+                    linewidth=0.7,
+                    position=position_dodge(0)) + 
+  theme(legend.position = "none",
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal)
+
+DOconcbars
+
+# turbidity
+turbbars <- ggplot(data = wq_summary, 
+                   aes(x = month,
+                       y = Turbidity.errors_mean,
+                       group = site,
+                       color = site)) +
+  xlab("Month") +
+  ylab(expression("Turbidity (FNU)")) + 
+  geom_line(linewidth=1.2) +
+  geom_point(size=3) +
+  geom_errorbar(aes(ymin=Turbidity.errors_mean-Turbidity.errors_sd, 
+                    ymax=Turbidity.errors_mean+Turbidity.errors_sd), 
+                    width=.5,
+                    linewidth=0.7,
+                    position=position_dodge(0)) + 
+  theme(legend.position = "none",
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal)
+
+turbbars
+
+# depth
+depthbars <- ggplot(data = wq_summary, 
+                   aes(x = month,
+                       y = Depth.adjusted_mean,
+                       group = site,
+                       color = site)) +
+  xlab("Month") +
+  ylab(expression("Depth (m)")) + 
+  geom_line(linewidth=1.2) +
+  geom_point(size=3) +
+  geom_errorbar(aes(ymin=Depth.adjusted_mean-Depth.adjusted_sd, 
+                    ymax=Depth.adjusted_mean+Depth.adjusted_sd), 
+                    width=.5,
+                    linewidth=0.7,
+                    position=position_dodge(0)) + 
+  theme(legend.position = "none") +
+  labs(color="Ecoregion") +
+  scale_color_manual(values=regionpal)
+
+depthbars
+
+# combined
+wq_barplots <- free(tempbars, side="l") / free(pHbars, side="l") / free(salbars, side="l") / free(DObars, side="l") / free(DOconcbars, side="l") / free(turbbars, side="l") / free(depthbars, side="l") + plot_layout()
+
+wq_barplots
+```
+
+# WQ exploration w/wunder + tide data
+```{r}
+# salinity + precipitation
+salcombined2 <- salinity + 
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.key.size = unit(0.5, 'cm'),
+        legend.position=c(.915,.23),
+        legend.box.background = element_rect(colour = "black",
+                                             size = 1))
+
+salprec <- salcombined2/precipitation
+salprec
+
+# pH and DO/Windspeed
+### pH and DO comparisons
+pHcombined2 <- pH +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8))
+
+pHcombined2
+
+#compare pH with DO
+phDO <- pHcombined2/DOconc_combined
+phDO
+
+site3pH <- ggplot(data=site3, aes(x=UNIX, y=pH.adjusted)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  facet_wrap(~Site.Name) +
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y",
+                   limits = lims) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+site3pH2 <- site3pH +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position=c(.12,.80),
+        legend.title=element_blank())
+
+site3DO <- ggplot(data=site3, aes(x=UNIX, y=ODO.mg.L.adjusted)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO (mg/L) Adjusted") +
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y",
+                   limits = lims) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+site3DOunadjusted <- ggplot(data=site3, aes(x=UNIX, y=ODO.mg.L)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("DO (mg/L)") +
+  scale_x_datetime(date_breaks = "1 month",
+                   date_labels = "%b %y",
+                   limits = lims) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+site3pHDO <- site3pH2/site3DO
+site3pHDO
+
+site3pHDOunadjusted <- site3pH2/site3DOunadjusted
+site3pHDOunadjusted
+
+#compare pH with windspeed
+pHwindspeed <- pHcombined2/windspeed
+pHwindspeed
+
+pHwindtide <- pHcombined2/windspeed2/tinovhart
+pHwindtide
+
+# zoom in
+pHoutlier <- ggplot(data=dataonly, aes(x=UNIX, y=pH.adjusted, col=Site.Name)) +
+  geom_line() +
+  xlab("Date") +
+  ylab ("pH") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%b %y",
+                   limits = pHlims) +
+  theme_bw()
+
+pHoutlier2 <- pHoutlier + # not sure why i have to do this
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position="top",
+        legend.title=element_blank(),
+        legend.text = element_text(size = 8))
+
+pHoutlier2
+
+tidezoom <- ggplot(data=tidedata, aes(x=Date, y=Tide.Height.ft.)) +
+  geom_line() +
+  xlab("Date") +
+  ylab("Tide Height (ft)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%d %b",
+                   limits = pHlims) +
+  theme_bw()
+
+windzoom <- ggplot(data=wunderdata, aes(x=Date, y=Wind.Speed.mph.Avg)) +
+  geom_line() +
+  xlab("Date") +
+  ylab("Avg Wind Speed (mph)") +
+  scale_x_datetime(date_breaks = "1 day",
+                   date_labels = "%b %y",
+                   limits = pHlims) +
+  theme_bw()
+
+windzoom2 <- windzoom +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        legend.position=c(.87,.23),
+        legend.title=element_blank())
+
+pHzoom <- pHoutlier2/windzoom2/tidezoom
+pHzoom
+```
+# monthly summary
+```{r}
+monthlevel_order <- c("Nov '23", "Dec '23", "Jan '24", "Feb '24", "Mar '24", "Apr '24", "May '24", "Jun '24", "Jul '24", "Aug '24", "Sep '24", "Oct '24", "Nov '24") 
+
+# salinity
+salinity <- dataonly %>% 
+  group_by(month, site) %>% 
+  summarize(mean_salinity = mean(Sal.adjusted, na.rm=T),
+            sd_salinity = sd(Sal.adjusted, na.rm=T))
+
+salinity_monthlyaverage <- ggplot(
+  data=salinity, aes(
+    x=month,
+    y=mean_salinity,
+    fill=site)) +
+  xlab("Month") +
+  ylab("Salinity (psu)") +
+  geom_bar(
+    position="dodge", stat="identity") +
+  geom_errorbar(
+    data=salinity, aes(
+      x=month,
+      ymin = mean_salinity-sd_salinity,
+      ymax = mean_salinity+sd_salinity),
+    position="dodge", stat="identity") +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+salinity_monthlyaverage
+
+# temperature
+temperature <- dataonly %>% 
+  group_by(month, site) %>% 
+  summarize(mean_temp = mean(Temp..C, na.rm=T),
+            sd_temp = sd(Temp..C, na.rm=T))
+
+temp_monthlyaverage <- ggplot(
+  data=temperature, aes(
+    x=month,
+    y=mean_temp,
+    fill=site)) +
+  xlab("Month") +
+  ylab("Temperature (C)") +
+  geom_bar(
+    position="dodge", stat="identity") +
+  geom_errorbar(
+    data=temperature, aes(
+      x=month,
+      ymin = mean_temp-sd_temp,
+      ymax = mean_temp+sd_temp),
+    position="dodge", stat="identity") +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+temp_monthlyaverage
+
+# pH
+pH <- dataonly %>% 
+  group_by(month, site) %>% 
+  summarize(mean_pH = mean(pH.adjusted, na.rm=T),
+            sd_pH = sd(pH.adjusted, na.rm=T))
+
+pH_monthlyaverage <- ggplot(
+  data=pH, aes(
+    x=month,
+    y=mean_pH,
+    fill=site)) +
+  xlab("Month") +
+  ylab("pH") +
+  geom_bar(
+    position="dodge", stat="identity") +
+  geom_errorbar(
+    data=pH, aes(
+      x=month,
+      ymin = mean_pH-sd_pH,
+      ymax = mean_pH+sd_pH),
+    position="dodge", stat="identity") +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+pH_monthlyaverage
+
+# DO
+DO <- dataonly %>% 
+  group_by(month, site) %>% 
+  summarize(mean_DO = mean(ODO...sat, na.rm=T),
+            sd_DO = sd(ODO...sat, na.rm=T))
+
+DO_monthlyaverage <- ggplot(
+  data=DO, aes(
+    x=month,
+    y=mean_DO,
+    fill=site)) +
+  xlab("Month") +
+  ylab("DO %") +
+  geom_bar(
+    position="dodge", stat="identity") +
+  geom_errorbar(
+    data=DO, aes(
+      x=month,
+      ymin = mean_DO-sd_DO,
+      ymax = mean_DO+sd_DO),
+    position="dodge", stat="identity") +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+DO_monthlyaverage
+
+# DO concentration
+DOconc <- dataonly %>% 
+  group_by(month, site) %>% 
+  summarize(mean_DOconc = mean(ODO.mg.L.adjusted, na.rm=T),
+sd_DOconc = sd(ODO.mg.L.adjusted, na.rm=T))
+
+DOconc_monthlyaverage <- ggplot(
+  data=DOconc, aes(
+    x=month,
+    y=mean_DOconc,
+    fill=site)) +
+  xlab("Month") +
+  ylab("DO (mg/L)") +
+  geom_bar(
+    position="dodge", stat="identity") +
+  geom_errorbar(
+    data=DOconc, aes(
+      x=month,
+      ymin = mean_DOconc-sd_DOconc,
+      ymax = mean_DOconc+sd_DOconc),
+    position="dodge", stat="identity") +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+DOconc_monthlyaverage
+
+# turbidity
+turbidity <- dataonly %>% 
+  group_by(month, site) %>% 
+  summarize(mean_turb = mean(Turbidity.errors, na.rm=T),
+            sd_turb = sd(Turbidity.errors, na.rm=T))
+
+turb_monthlyaverage <- ggplot(
+  data=turbidity, aes(
+    x=month,
+    y=mean_turb,
+    fill=site)) +
+  xlab("Month") +
+  ylab("Turbidity (FNU)") +
+  geom_bar(
+    position="dodge", stat="identity") +
+  geom_errorbar(
+    data=turbidity, aes(
+      x=month,
+      ymin = mean_turb-sd_turb,
+      ymax = mean_turb+sd_turb),
+    position="dodge", stat="identity") +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+turb_monthlyaverage
+
+# depth
+depth <- depthdata %>% 
+  group_by(month, site) %>% 
+  summarize(mean_depth = mean(Depth.adjusted, na.rm=T),
+            sd_depth = sd(Depth.adjusted, na.rm=T))
+
+depth_monthlyaverage <- ggplot(
+  data=depth, aes(
+    x=month,
+    y=mean_depth,
+    fill=site)) +
+  xlab("Month") +
+  ylab("Depth (m)") +
+  geom_bar(
+    position="dodge", stat="identity") +
+  geom_errorbar(
+    data=depth, aes(
+      x=month,
+      ymin = mean_depth-sd_depth,
+      ymax = mean_depth+sd_depth),
+    position="dodge", stat="identity") +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+depth_monthlyaverage
+
+# boxplot versions
+# salinity
+salinity_monthlyaverage_boxplot <- ggplot(
+  data=dataonly, aes(
+    x=month,
+    y=Sal.adjusted,
+    fill=site)) +
+  xlab("Month") +
+  ylab("Salinity (psu)") +
+  geom_boxplot(
+    outlier.shape=NA) +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+salinity_monthlyaverage_boxplot
+
+# temperature
+temp_monthlyaverage_boxplot <- ggplot(
+  data=dataonly, aes(
+    x=month,
+    y=Temp..C,
+    fill=site)) +
+  xlab("Month") +
+  ylab("Temperature (C)") +
+  geom_boxplot(
+    outlier.shape=NA) +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+temp_monthlyaverage_boxplot
+
+# pH
+pH_monthlyaverage_boxplot <- ggplot(
+  data=dataonly, aes(
+    x=month,
+    y=pH.adjusted,
+    fill=site)) +
+  xlab("Month") +
+  ylab("pH") +
+  geom_boxplot(
+    outlier.shape=NA) +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+pH_monthlyaverage_boxplot
+
+# DO
+DO_monthlyaverage_boxplot <- ggplot(
+  data=dataonly, aes(
+    x=month,
+    y=ODO...sat,
+    fill=site)) +
+  xlab("Month") +
+  ylab("DO %") +
+  geom_boxplot(
+    outlier.shape=NA) +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+DO_monthlyaverage_boxplot
+
+# DO concentration
+DOconc_monthlyaverage_boxplot <- ggplot(
+  data=dataonly, aes(
+    x=month,
+    y=ODO.mg.L.adjusted,
+    fill=site)) +
+  xlab("Month") +
+  ylab("DO (mg/L)") +
+  geom_boxplot(
+    outlier.shape=NA) +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+DOconc_monthlyaverage_boxplot
+
+# turbidity
+turb_monthlyaverage_boxplot <- ggplot(
+  data=dataonly, aes(
+    x=month,
+    y=Turbidity.errors,
+    fill=site)) +
+  xlab("Month") +
+  ylab("Turbidity (FNU)") +
+  geom_boxplot(
+    outlier.shape=NA) +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+turb_monthlyaverage_boxplot
+
+# depth
+depth_monthlyaverage_boxplot <- ggplot(
+  data=depthdata, aes(
+    x=month,
+    y=Depth.adjusted,
+    fill=site)) +
+  xlab("Month") +
+  ylab("Depth (m)") +
+  geom_boxplot(
+    outlier.shape=NA) +
+  scale_x_discrete(
+    limits = monthlevel_order) +
+  guides(
+    fill=guide_legend(title="Ecoregion")) +
+  theme_bw()
+
+depth_monthlyaverage_boxplot
+
+### combined
+monthlyreports <- ggarrange(nov2023combined, dec2023combined, jan2024combined, feb2024combined, mar2024combined, apr2024combined, may2024combined, jun2024combined, jul2024combined, aug2024combined, sep2024combined, oct2024combined, nov2024combined,   nrow=1, ncol=1)
+
+monthlysummary <- ggarrange(salinity_monthlyaverage, temp_monthlyaverage, pH_monthlyaverage, DO_monthlyaverage, DOconc_monthlyaverage, turb_monthlyaverage, depth_monthlyaverage, salinity_monthlyaverage_boxplot, temp_monthlyaverage_boxplot, pH_monthlyaverage_boxplot, DO_monthlyaverage_boxplot, DOconc_monthlyaverage_boxplot, turb_monthlyaverage_boxplot, depth_monthlyaverage_boxplot, nrow=1, ncol=1)
+```
